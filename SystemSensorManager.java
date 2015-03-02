@@ -122,7 +122,7 @@ public class SystemSensorManager extends SensorManager {
 				IMultiResourceManagerService mrm = IMultiResourceManagerService.Stub.asInterface(ServiceManager.getService(Context.RESOURCE_MANAGER_SERVICE));
 
 				try {
-					mrm.grant(callingUid, MultiResourceManager.HARDWARE_SENSOR_ACC);
+					if(mrm != null)	mrm.grant(callingUid, MultiResourceManager.HARDWARE_SENSOR_ACC);
 				} catch(Exception e) {
 					e.printStackTrace();
 				}
