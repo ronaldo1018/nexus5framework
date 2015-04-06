@@ -89,9 +89,9 @@ class AlarmManagerService extends IAlarmManager.Stub {
 	private static final String TAG = "AlarmManager";
 	private static final String HOWARD_TAG = "HOWARD_TAG";
 	private static final String ClockReceiver_TAG = "ClockReceiver";
-	private static final boolean localLOGV = false;
+	private static final boolean localLOGV = true;
 	private static final boolean DEBUG_BATCH = localLOGV || false;
-	private static final boolean DEBUG_VALIDATE = localLOGV || false;
+	private static final boolean DEBUG_VALIDATE = false;
 	private static boolean DEBUG_HOWARD = true;
 	private static final int ALARM_EVENT = 1;
 	private static final String TIMEZONE_PROPERTY = "persist.sys.timezone";
@@ -358,7 +358,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 					isPerceivable = alarmIsP;
 				}
 				deadline = isPerceivable ? end : intervalEnd;
-				when = isPerceivable ? start : intervalStart;
+				when = isPerceivable ? start : start != -1 ? start : intervalStart;
 				addHardwareUsage(alarm.getHardwareUsage());
 				newStart = true;
 			} else {
@@ -494,13 +494,13 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				return 0.f;
 			}
 
-			float weight = 0.f;
+			float weight = 0.f ;
 			for (int i = 0; i < N; i++) {
 				Alarm a = alarms.get(i);
-				weight += MultiResourceManager.getHardwareWeight(a.getHardwareUsage(), hardwareUsage);
+				weight += MultiResourceManager.getHardwareWeight(a.getHardwareUsage(), a.isWakeup());
 			}
 
-			weight -= MultiResourceManager.getHardwareWeight(hardwareUsage);
+			weight -= MultiResourceManager.getHardwareWeight(hardwareUsage, hasWakeups());
 			return weight;
 		}
 
@@ -627,12 +627,15 @@ class AlarmManagerService extends IAlarmManager.Stub {
 	int attemptCoalesceLocked(long whenElapsed, long maxWhen, Alarm a) {
 		final int N = mAlarmBatches.size();
 		if (HOWARD_POLICY){	
+			long[] aWindow = a.getWindow();
+			long[] aInterval = a.getInterval();
 			for (int i = 0; i < N; i++) {
 				Batch b = mAlarmBatches.get(i);
-				long[] aWindow = a.getWindow();
-				long[] aInterval = a.getInterval();
+				if(b.standalone){
+					continue;
+				}
 				MultiResourceManager.SIMILARITY timeSimilarity = MultiResourceManager.getTimeSimilarity(aWindow[0], aWindow[1], aInterval[0], aInterval[1], b.start, b.end, b.intervalStart, b.intervalEnd), hardwareSimilarity = MultiResourceManager.getHardwareSimilarity(a.getHardwareUsage(), b.hardwareUsage);
-				if (!b.standalone && timeSimilarity == MultiResourceManager.SIMILARITY.HIGH && hardwareSimilarity == MultiResourceManager.SIMILARITY.HIGH) {
+				if (timeSimilarity == MultiResourceManager.SIMILARITY.HIGH && hardwareSimilarity == MultiResourceManager.SIMILARITY.HIGH) {
 					return i;
 				}
 			}
@@ -788,6 +791,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		 * Calculate each variable and add the record to history.
 		 */
 		public WakeupEvent finishRecord(long stopRtc, PendingIntent pi) {
+			if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "111111111111111Time: " + System.currentTimeMillis());
 			int uid = pi.getCreatorUid();
 
 			String str = new String("uid_stat/" + uid + "/tcp_rcv");
@@ -800,9 +804,11 @@ class AlarmManagerService extends IAlarmManager.Stub {
 
 			int[] hardwareUsage = new int[MultiResourceManager.NUM_HARDWARE];
 			long lastFocus;
+			if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "22222222222222222Time: " + System.currentTimeMillis());
 
 			IMultiResourceManagerService mrm = IMultiResourceManagerService.Stub.asInterface(ServiceManager.getService(Context.RESOURCE_MANAGER_SERVICE));
 
+			if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "3333333333333333Time: " + System.currentTimeMillis());
 			hardwareUsage[0] = tcpR - tcpReceive + tcpS - tcpSend;
 			try {
 				for(int i = 1; i < hardwareUsage.length; i++){
@@ -814,6 +820,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				return null;
 			}
 
+			if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "444444444444Time: " + System.currentTimeMillis());
 			return new WakeupEvent(startRtc, uid, pi.getIntent().getAction(), type, stopRtc - startRtc, delay, window, interval, register2Trigger, hardwareUsage, lastFocus);
 		}
 	}
@@ -1130,7 +1137,10 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			return null;
 		}
 
+		if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "aaaaaaaaaaaaaaaTime: " + System.currentTimeMillis());
+
 		ArrayList<Batch> overlappedAlarmsOri = getOverlappedAlarms(firstWakeup);
+		if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "bbbbbbbbbbbbbbbTime: " + System.currentTimeMillis());
 		ArrayList<Batch> overlappedAlarms = cloneList(overlappedAlarmsOri);
 		ArrayList<Batch> connectedComponents = new ArrayList<Batch>();
 		ArrayList<ArrayList<Integer>> connectedBatchNumber = new ArrayList<ArrayList<Integer>>();
@@ -1146,14 +1156,17 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			Slog.d(HOWARD_TAG, "Overlapped batches:");
 			logBatchesLockedHoward(overlappedAlarms);
 		}
+		if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "cccccccccccccccTime: " + System.currentTimeMillis());
 
 		// Connect the all mergeable nodes.
-		for(int i = 0; i < overlappedAlarms.size(); i++){
+		int size = overlappedAlarms.size();
+		for(int i = 0; i < size; i++){
 			Batch a = overlappedAlarms.get(i);
 
 			int mergeIndex = -1;
 			if(!a.standalone){
-				for(int j = 0; j < connectedComponents.size(); j++){
+				int connectedSize = connectedComponents.size();
+				for(int j = 0; j < connectedSize; j++){
 					Batch b = connectedComponents.get(j);
 
 					if(isMergeable(a, b)){
@@ -1173,27 +1186,32 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				connectedBatchNumber.get(connectedBatchNumber.size()-1).add(i);
 			}
 		}
+		if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "dddddddddddddddTime: " + System.currentTimeMillis());
 		
 		// Find the connected component with highest weight.
 		float highestWeight = connectedComponents.get(0).getWeight();
 		int highestIndex = 0;
-		for(int i = 1; i < connectedComponents.size(); i++){
+		size = connectedComponents.size();
+		for(int i = 1; i < size; i++){
 			float weight = connectedComponents.get(i).getWeight(); 
 			if(weight > highestWeight){
 				highestWeight = weight; 
 				highestIndex = i; 
 			}
 		}
+		if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "eeeeeeeeeeeeeeeTime: " + System.currentTimeMillis());
 
 		// Rebatch the original batches.
 		ArrayList<Integer> highestBatchNumber = connectedBatchNumber.get(highestIndex);
 		Batch b = overlappedAlarmsOri.get(highestBatchNumber.get(0));
-		for(int i = 1; i < highestBatchNumber.size(); i++){
+		size = highestBatchNumber.size();
+		for(int i = 1; i < size; i++){
 			b.add(overlappedAlarmsOri.get(highestBatchNumber.get(i)));
 		}
-		for(int i = 1; i < highestBatchNumber.size(); i++){
+		for(int i = 1; i < size; i++){
 			mAlarmBatches.remove(overlappedAlarmsOri.get(highestBatchNumber.get(i)));
 		}
+		if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "fffffffffffffffTime: " + System.currentTimeMillis());
 
 		if (DEBUG_HOWARD) {
 			Slog.d(HOWARD_TAG, "");
@@ -1222,6 +1240,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			//Slog.d(HOWARD_TAG, "Rebatch batches:");
 			//logBatchesLockedHoward(mAlarmBatches);
 		}
+		if (DEBUG_HOWARD)	Slog.d(HOWARD_TAG, "ggggggggggggggggggggTime: " + System.currentTimeMillis());
 
 		return b;
 	}
@@ -1633,9 +1652,6 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			logBatchLockedHoward(b);
 		}
 		for (int i = 0; i < S; i++) {
-			if(DEBUG_HOWARD){
-				Slog.d(HOWARD_TAG, "S= " + S + " i=" + i);	
-			}
 			Alarm alarm = b.get(i);
 			alarm.count = 1;
 			triggerList.add(alarm);
@@ -1818,6 +1834,13 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			return hardwareUsage != null? MultiResourceManager.isPerceivable(hardwareUsage) : true;
 		}
 
+		public boolean isWakeup(){
+			if ((type & TYPE_NONWAKEUP_MASK) == 0) {
+				return true;
+			}
+			return false;
+		}
+
 		public long[] getWindow(){
 			long[] window = new long[2];
 			window[0] = whenElapsed;
@@ -1827,8 +1850,13 @@ class AlarmManagerService extends IAlarmManager.Stub {
 
 		public long[] getInterval(){
 			long[] interval = new long[2];
-			interval[0] = whenElapsed - (long)(INTERVAL_RATIO*register2Trigger);
-			interval[1] = whenElapsed + (long)(INTERVAL_RATIO*register2Trigger);
+			if(repeatInterval > 0){
+				//interval[0] = whenElapsed - (long)(INTERVAL_RATIO*register2Trigger);
+				interval[0] = whenElapsed;
+			} else {
+				interval[0] = whenElapsed;
+			}
+			interval[1] = Math.max(whenElapsed + (long)(INTERVAL_RATIO*register2Trigger), maxWhen);
 			return interval;	
 		}
 
