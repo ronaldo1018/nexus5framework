@@ -141,21 +141,17 @@ public class MultiResourceManager {
 		return weight;
 	}
 
-	public static float getHardwareWeight(int[] aHardwareUsage, int[] bHardwareUsage){
+	public static float getHardwareWeight(int[] aHardwareUsage, boolean isWakeup){
 		float weight = 0.f;
-		weight += HARDWARE_ENERGY_LEVEL.ONLY_CPU.weight();
+		if(isWakeup){
+			weight += HARDWARE_ENERGY_LEVEL.ONLY_CPU.weight();
+		}
 
-		if(aHardwareUsage == null || bHardwareUsage == null){
+		if(aHardwareUsage == null){
 			return weight;
 		}
-
-		int[] usage = new int[NUM_HARDWARE];
-
-		for(int i = 0; i < NUM_HARDWARE; i++){
-			usage[i] = aHardwareUsage[i] + bHardwareUsage[i];
-		}
 		
-		weight += getHardwareWeight(usage);
+		weight += getHardwareWeight(aHardwareUsage);
 
 		return weight;
 	}
