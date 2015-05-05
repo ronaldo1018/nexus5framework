@@ -16,4 +16,6 @@ interface IMultiResourceManagerService
 	void focusChanged(int uid);
 	long getLastFocusTime(int uid);
 	float getAppUsage(int uid);
+
+	int getConnectivityType();
 }
