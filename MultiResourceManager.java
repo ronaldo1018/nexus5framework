@@ -9,12 +9,36 @@ import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.telephony.TelephonyManager;
 import android.util.Log;
+import android.os.IMultiResourceManagerService;
 
 public class MultiResourceManager {
 	private final String TAG = "MultiResourceManager";
 
 	public static enum SIMILARITY {
-		HIGH, MID, LOW
+		HIGH(3), MID(2), LOW(1);
+		private int value;
+		
+		private SIMILARITY(int value){
+			this.value = value;
+		}
+
+		public int getValue(){
+			return value;
+		}
+
+		boolean higher(SIMILARITY b){
+			if(this.value > b.getValue()){
+				return true;
+			}
+			return false;
+		}
+
+		boolean equals(SIMILARITY b){
+			if(this.value == b.getValue()){
+				return true;
+			}
+			return false;
+		}
 	}
 
 	public static final int HARDWARE_DEFAULT = -1;
@@ -47,7 +71,11 @@ public class MultiResourceManager {
 		}
 	}
 
-	private IMultiResourceManagerService mService;
+	public static int TYPE_WIFI = 1;
+        public static int TYPE_MOBILE = 2;
+        public static int TYPE_NOT_CONNECTED = 0;
+
+	private static IMultiResourceManagerService mService;
 
 	public MultiResourceManager(IMultiResourceManagerService service) {
 		mService = service;
@@ -107,13 +135,25 @@ public class MultiResourceManager {
 
 	public static float getHardwareWeight(int[] hardwareUsage){
 		float weight = 0.f;
+		int connectivityType = 0;
 		
 		for(int i = 0; i < NUM_HARDWARE; i++){
 			if(hardwareUsage[i] > 0){
 				switch(i){
 					case HARDWARE_NETWORK:
-						// Need to check the network type.
-						weight += HARDWARE_ENERGY_LEVEL.NETWORK_WIFI.weight();
+						if(mService == null){
+							mService = IMultiResourceManagerService.Stub.asInterface(ServiceManager.getService(Context     .RESOURCE_MANAGER_SERVICE));
+						}
+						try {	
+							connectivityType = mService.getConnectivityType();
+						} catch(Exception e) {
+							e.printStackTrace();
+						}
+
+						if(connectivityType == TYPE_WIFI)
+							weight += HARDWARE_ENERGY_LEVEL.NETWORK_WIFI.weight();
+						else
+							weight += HARDWARE_ENERGY_LEVEL.NETWORK_MOBILE.weight();
 						break;
 					case HARDWARE_VIBRATION:
 						weight += HARDWARE_ENERGY_LEVEL.VIBRATION.weight();
@@ -125,8 +165,19 @@ public class MultiResourceManager {
 						weight += HARDWARE_ENERGY_LEVEL.SCREEN.weight();
 						break;
 					case HARDWARE_AGPS:
-						// Need to check the network type.
-						weight += HARDWARE_ENERGY_LEVEL.AGPS_WIFI.weight();
+						if(mService == null){
+							mService = IMultiResourceManagerService.Stub.asInterface(ServiceManager.getService(Context     .RESOURCE_MANAGER_SERVICE));
+						}	
+						try {	
+							connectivityType = mService.getConnectivityType();
+						} catch(Exception e) {
+							e.printStackTrace();
+						}
+
+						if(connectivityType == TYPE_WIFI)
+							weight += HARDWARE_ENERGY_LEVEL.AGPS_WIFI.weight();
+						else
+							weight += HARDWARE_ENERGY_LEVEL.AGPS_MOBILE.weight();
 						break;
 					case HARDWARE_GPS: 
 						weight += HARDWARE_ENERGY_LEVEL.GPS.weight();
@@ -154,5 +205,18 @@ public class MultiResourceManager {
 		weight += getHardwareWeight(aHardwareUsage);
 
 		return weight;
+	}
+
+	public static boolean isHigherSimilarity(SIMILARITY time, SIMILARITY hardware, SIMILARITY t, SIMILARITY h, int[] firstWakeupHardware, int[] bHardware, int[] aHardware){
+
+			
+		if(t.higher(SIMILARITY.LOW) && h.higher(hardware))	return true;
+		if(t.higher(time) && h.higher(hardware))	return true;
+		if(t.equals(time) && h.higher(hardware))	return true;
+		if(t.higher(time) && h.equals(hardware))	return true;	
+		//if(t.equals(time) || t.higher(time)){
+		//}
+	
+		return false;
 	}
 }

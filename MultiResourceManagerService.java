@@ -12,10 +12,13 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.util.Log;
+import android.util.Pair;
 import android.os.IMultiResourceManagerService;
 import android.os.PowerManager;
 import android.os.WorkSource;
 import android.os.MultiResourceManager;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -52,8 +55,10 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 
 	private int mCount = 0;
 	private HashMap<String, Long> mLastGrantTime = new HashMap<String, Long>();
+	private ArrayList<ArrayList<Pair<Integer, Long>>> mGrantHistory = new ArrayList<ArrayList<Pair<Integer, Long>>>();
 	private Object mLock = new Object();
 	private Calendar mLastDate;
+	private int mNetworkType;
 
 	// For buffered event
 	ArrayList<Notification> mBufferedNotification = new ArrayList<Notification>();
@@ -80,6 +85,9 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 	long mAccumulatedScreenOnTime = 0;
 	private HashMap<Integer, Long> mAppUsage = new HashMap<Integer, Long>();
 
+	// For network type
+	private ConnectionChangeReceiver mConnectionChangeReceiver;
+
 	public MultiResourceManagerService(Context context)
 	{
 		super();
@@ -89,7 +97,12 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 		mNotificationManager = (NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
 
 		mScreenEventReceiver = new ScreenEventReceiver();
+		mConnectionChangeReceiver = new ConnectionChangeReceiver();
 		mLastDate = Calendar.getInstance();
+
+		for(int i = 0; i < MultiResourceManager.NUM_HARDWARE; i++){
+			mGrantHistory.add(new ArrayList<Pair<Integer, Long>>());
+		}
 
 		Log.i(TAG,"MultiResourceManagerService is constructed!");
 		Log.i(HOWARD_TAG,"MultiResourceManagerService is constructed!");
@@ -139,6 +152,9 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 		String id = new String(uid + " " + hardware);
 
 		mLastGrantTime.put(id, nowRtc);
+		mGrantHistory.get(hardware).add(new Pair(uid, nowRtc));	
+
+		//mAlarmManager.setLastGrantHardware(uid, hardware);
 
 		if(hardware == MultiResourceManager.HARDWARE_VIBRATION || hardware == MultiResourceManager.HARDWARE_SOUND) {
 			addNotificationEvent(uid, hardware);
@@ -239,6 +255,17 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 			if (mNotificationEvent.size() > 0) {
 				for(NotificationEvent ne : mNotificationEvent) {
 					pw.println(ne.toString());
+				}
+			}
+
+			pw.println();
+			pw.println("HardwareUsage:");
+			for(int i = 0; i < MultiResourceManager.NUM_HARDWARE; i++){
+				pw.println("  Hardware " + MultiResourceManager.HARDWARE_STRING[i] + ":");
+				if (mGrantHistory.get(i).size() > 0) {
+					for(Pair p : mGrantHistory.get(i)){
+						pw.println(p.second + " " + p.first);
+					}
 				}
 			}
 		}
@@ -485,6 +512,13 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 		return mAppUsage.get(uid)/mAccumulatedScreenOnTime;
 	}
 
+	/**
+	 * Return the network type. (1: WIFI, 2: MOBILE, 0: NULL)
+	 */
+	public int getConnectivityType(){
+		return mNetworkType;
+	}
+
 	private class ScreenEvent {
 		int reason;
 		long startTime;
@@ -607,6 +641,39 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 				}
 			}
 	}
+
+	class ConnectionChangeReceiver extends BroadcastReceiver {
+		public ConnectionChangeReceiver() {
+			Log.i(TAG, "ConnectionChangeReceiver. create().");
+			Log.i(HOWARD_TAG, "ConnectionChangeReceiver. create().");
+			IntentFilter filter = new IntentFilter();
+			filter.addAction(ConnectivityManager.CONNECTIVITY_ACTION);
+			mContext.registerReceiver(this, filter);
+		}
+
+		@Override
+			public void onReceive(Context context, Intent intent) {
+				synchronized (mLock) {
+					mNetworkType = getConnectivityStatus(context);
+					Log.i(TAG, "ConnectionChangeReceiver. networkType: " + mNetworkType);
+					Log.i(HOWARD_TAG, "ConnectionChangeReceiver. networkType: " + mNetworkType);
+				}
+			}
+
+		private int getConnectivityStatus(Context context) {
+			ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+
+			NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
+			if (null != activeNetwork) {
+				if(activeNetwork.getType() == ConnectivityManager.TYPE_WIFI)
+					return MultiResourceManager.TYPE_WIFI;
+
+				if(activeNetwork.getType() == ConnectivityManager.TYPE_MOBILE)
+					return MultiResourceManager.TYPE_MOBILE;
+			} 
+			return MultiResourceManager.TYPE_NOT_CONNECTED;
+		}
+	}	
 
 	private final class WakeLock {
 		public int mFlags;
