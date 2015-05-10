@@ -209,7 +209,6 @@ public class MultiResourceManager {
 
 	public static boolean isHigherSimilarity(SIMILARITY time, SIMILARITY hardware, SIMILARITY t, SIMILARITY h, int[] firstWakeupHardware, int[] bHardware, int[] aHardware){
 
-			
 		if(t.higher(SIMILARITY.LOW) && h.higher(hardware))	return true;
 		if(t.higher(time) && h.higher(hardware))	return true;
 		if(t.equals(time) && h.higher(hardware))	return true;

@@ -89,7 +89,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 	private static final String TAG = "AlarmManager";
 	private static final String HOWARD_TAG = "HOWARD_TAG";
 	private static final String ClockReceiver_TAG = "ClockReceiver";
-	private static final boolean localLOGV = true;
+	private static final boolean localLOGV = false;
 	private static final boolean DEBUG_BATCH = localLOGV || false;
 	private static final boolean DEBUG_VALIDATE = false;
 	private static boolean DEBUG_HOWARD = false;
@@ -102,7 +102,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 	private static final IncreasingTimeOrder sIncreasingTimeOrder = new IncreasingTimeOrder();
 
 	private static final boolean WAKEUP_STATS = true;
-	private static final boolean HOWARD_POLICY = false;
+	private static final boolean HOWARD_POLICY = true;
 	private static final boolean OBSERVATION_APP_BEHAVIOR = false;
 	private static final boolean FIXED_INTERVAL = false;
 	private static final long FIXED_INTERVAL_LENGTH = 60000;
@@ -135,7 +135,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		{"AlarmTaskSchedule.com.sds.android.ttpod", "360000", "1"},
 	};
 	
-	private static final String EXP_APP_ALARM = "ComponentInfo{com.rakesh.alarmmanagerexample2/com.rakesh.alarmmanagerexample.AlarmManagerBroadcastReceiver}";
+	private static final String EXP_APP_ALARM = "ComponentInfo{com.rakesh.alarmmanagerexample/com.rakesh.alarmmanagerexample.AlarmManagerBroadcastReceiver}";
 	
 	private final Context mContext;
 
@@ -293,6 +293,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 	private final static HashMap<String, WakeupEvent> mWakeupRecords = new HashMap<String, WakeupEvent>();
 	private final LinkedList<DecisionEvent> mRecentDecisionEvent = new LinkedList<DecisionEvent>();    
 	private Batch mNextWakeupBatch = null;
+	private Batch mNextNonWakeupBatch = null;
 	private static final float INTERVAL_RATIO = 0.99f;
 	
 	static final class Batch {
@@ -714,6 +715,9 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			int highestIndex = -1;
 			for (int i = 0; i < N; i++) {
 				Batch b = mAlarmBatches.get(i);
+				if(b.when > tmp.deadline){
+					break;
+				}
 				if(b.standalone){
 					continue;
 				}
@@ -727,18 +731,18 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 				if (timeSimilarity == MultiResourceManager.SIMILARITY.HIGH && hardwareSimilarity == MultiResourceManager.SIMILARITY.HIGH) {
 					return i;
-				}*/
+				} !!!!!!!!!!!!!!!!!!!!!!!!!!!!!! */
 			}
 
 			if (DEBUG_HOWARD) {
-				Slog.d(HOWARD_TAG, "");
-				Slog.d(HOWARD_TAG, "Original batches:");
-				logBatchesLockedHoward(mAlarmBatches);
-				Slog.d(HOWARD_TAG, "");
-				Slog.d(HOWARD_TAG, "Add batches:");
-				logBatchLockedHoward(tmp);
-				Slog.d(HOWARD_TAG, "");
-				Slog.d(HOWARD_TAG, "Highest index: " + highestIndex);
+				//Slog.d(HOWARD_TAG, "");
+				//Slog.d(HOWARD_TAG, "Original batches:");
+				//logBatchesLockedHoward(mAlarmBatches);
+				//Slog.d(HOWARD_TAG, "");
+				//Slog.d(HOWARD_TAG, "Add batches:");
+				//logBatchLockedHoward(tmp);
+				//Slog.d(HOWARD_TAG, "");
+				//Slog.d(HOWARD_TAG, "Highest index: " + highestIndex);
 			}
 	
 			return highestIndex;
@@ -761,15 +765,34 @@ class AlarmManagerService extends IAlarmManager.Stub {
 	}
 
 	void rebatchAllAlarmsLocked(boolean doValidate) {
-		ArrayList<Batch> oldSet = (ArrayList<Batch>) mAlarmBatches.clone();
-		mAlarmBatches.clear();
-		final long nowElapsed = SystemClock.elapsedRealtime();
-		final int oldBatches = oldSet.size();
-		for (int batchNum = 0; batchNum < oldBatches; batchNum++) {
-			Batch batch = oldSet.get(batchNum);
-			final int N = batch.size();
-			for (int i = 0; i < N; i++) {
-				Alarm a = batch.get(i);
+		if(HOWARD_POLICY){
+			ArrayList<Batch> oldSet = (ArrayList<Batch>) mAlarmBatches.clone();
+			ArrayList<Alarm> oldAlarmSet = new ArrayList<Alarm>();
+			mAlarmBatches.clear();
+			final long nowElapsed = SystemClock.elapsedRealtime();
+			final int oldBatches = oldSet.size();
+			for (int batchNum = 0; batchNum < oldBatches; batchNum++) {
+				Batch batch = oldSet.get(batchNum);
+				final int N = batch.size();
+				for (int i = 0; i < N; i++) {
+					Alarm a = batch.get(i);
+					int index = getIndexByHardware(oldAlarmSet, a);
+					if(index != -1){
+						oldAlarmSet.add(index, a);
+					} else {
+						oldAlarmSet.add(a);
+					}
+				}
+			}	
+
+			final int N = oldAlarmSet.size();
+			for(int alarmNum = 0; alarmNum < N; alarmNum++){
+				Alarm a = oldAlarmSet.get(alarmNum);
+
+				if(DEBUG_HOWARD){
+					//Slog.d(HOWARD_TAG, "Index: " + alarmNum + ", Alarm: " + a.toString());
+				}
+
 				long whenElapsed = convertToElapsed(a.when, a.type);
 				final long maxElapsed;
 				if (a.whenElapsed == a.maxWhen) {
@@ -784,9 +807,49 @@ class AlarmManagerService extends IAlarmManager.Stub {
 						: maxTriggerTime(nowElapsed, whenElapsed, a.repeatInterval);
 				}
 				setImplLocked(a.type, a.when, whenElapsed, a.windowLength, maxElapsed,
-						a.repeatInterval, a.operation, batch.standalone, doValidate, a.workSource);
+						a.repeatInterval, a.operation, false, doValidate, a.workSource);
+			}
+		} else {
+			ArrayList<Batch> oldSet = (ArrayList<Batch>) mAlarmBatches.clone();
+			mAlarmBatches.clear();
+			final long nowElapsed = SystemClock.elapsedRealtime();
+			final int oldBatches = oldSet.size();
+			for (int batchNum = 0; batchNum < oldBatches; batchNum++) {
+				Batch batch = oldSet.get(batchNum);
+				final int N = batch.size();
+				for (int i = 0; i < N; i++) {
+					Alarm a = batch.get(i);
+					long whenElapsed = convertToElapsed(a.when, a.type);
+					final long maxElapsed;
+					if (a.whenElapsed == a.maxWhen) {
+						// Exact
+						maxElapsed = whenElapsed;
+					} else {
+						// Not exact.  Preserve any explicit window, otherwise recalculate
+						// the window based on the alarm's new futurity.  Note that this
+						// reflects a policy of preferring timely to deferred delivery.
+						maxElapsed = (a.windowLength > 0)
+							? (whenElapsed + a.windowLength)
+							: maxTriggerTime(nowElapsed, whenElapsed, a.repeatInterval);
+					}
+					setImplLocked(a.type, a.when, whenElapsed, a.windowLength, maxElapsed,
+							a.repeatInterval, a.operation, batch.standalone, doValidate, a.workSource);
+				}
 			}
 		}
+	}
+
+	private static int getIndexByHardware(ArrayList<Alarm> alarmSet, Alarm a){
+		float hardwareWeight = MultiResourceManager.getHardwareWeight(a.getHardwareUsage(), a.isWakeup());
+		final int N = alarmSet.size();
+		for(int i = 0; i < N; i++){
+			Alarm b = alarmSet.get(i);
+			float weight = MultiResourceManager.getHardwareWeight(b.getHardwareUsage(), b.isWakeup());
+			if(hardwareWeight > weight){
+				return i;
+			}
+		}
+		return N;
 	}
 
 	private static final class InFlight extends Intent {
@@ -826,7 +889,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		if(pi.getIntent() != null && pi.getIntent().getComponent() != null
 			&& pi.getIntent().getComponent().toString().equals(EXP_APP_ALARM)){
 			int action = Integer.parseInt(pi.getIntent().getAction());
-			if(action >= 1 && action <= 35){
+			if(action < 10000){
 				return true;
 			}
 		}
@@ -838,8 +901,35 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		int[] ret = new int[MultiResourceManager.NUM_HARDWARE];
 		int action = Integer.parseInt(pi.getIntent().getAction());
 
-		ret[(action-1)/5]++;
-
+		if(action >= 1 && action <= 35){
+			ret[(action-1)/5]++;
+		} else {
+			switch(action){
+				case 102:
+				case 104:
+				case 106:
+				case 107:
+				case 108:
+				case 109:
+				case 110:
+				case 111:
+				case 112:
+				case 113:
+				case 114:
+				case 115:
+				case 117:
+				case 118:
+				case 120:
+				case 121:
+					ret[MultiResourceManager.HARDWARE_NETWORK]++;
+					break;
+				case 122:
+				case 123:
+				case 124:
+					ret[MultiResourceManager.HARDWARE_AGPS]++;
+					break;
+			}
+		}
 		return ret;
 	} 
 
@@ -1101,19 +1191,20 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				operation, workSource, SystemClock.elapsedRealtime());
 		removeLocked(operation);
 
+		boolean newStart = false;
 		int whichBatch = (isStandalone) ? -1 : attemptCoalesceLocked(whenElapsed, maxWhen, a);
 		if(OBSERVATION_APP_BEHAVIOR)	whichBatch = -1;
 		if (whichBatch < 0) {
 			Batch batch = new Batch(a);
 			batch.standalone = isStandalone;
-			addBatchLocked(mAlarmBatches, batch);
+			newStart = addBatchLocked(mAlarmBatches, batch);
 		} else {
 			Batch batch = mAlarmBatches.get(whichBatch);
 			if (batch.add(a)) {
 				// The start time of this batch advanced, so batch ordering may
 				// have just been broken.  Move it to where it now belongs.
 				mAlarmBatches.remove(whichBatch);
-				addBatchLocked(mAlarmBatches, batch);
+				newStart = addBatchLocked(mAlarmBatches, batch);
 			}
 		}
 
@@ -1464,14 +1555,12 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				final Batch firstBatch = mAlarmBatches.get(0);
 				if (firstWakeup != null && mNextWakeup != firstWakeup.when) {
 					mNextWakeup = firstWakeup.when;
-					setLocked(ELAPSED_REALTIME_WAKEUP, firstWakeup.when);
-					if (DEBUG_HOWARD_LEVEL2){
-						Slog.d(HOWARD_TAG, "Next wake up batch: " + firstWakeup.when);
-						logBatchLockedHoward(firstWakeup);
-					}
+					mNextWakeupBatch = firstWakeup;
+					setLocked(ELAPSED_REALTIME_WAKEUP, firstWakeup.when);	
 				}
 				if (firstBatch != firstWakeup && mNextNonWakeup != firstBatch.when) {
 					mNextNonWakeup = firstBatch.when;
+					mNextNonWakeupBatch = firstBatch;
 					setLocked(ELAPSED_REALTIME, firstBatch.when);
 				}
 			}
@@ -1915,6 +2004,11 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		while (mAlarmBatches.size() > 0) {
 			Batch batch = mAlarmBatches.get(0);
 
+			if(DEBUG_HOWARD || DEBUG_HOWARD_LEVEL2){
+				Slog.d(HOWARD_TAG, "Check the batch: start= " + batch.when + " nowELAPSED= " + nowELAPSED);
+				logBatchLockedHoward(batch);
+			}
+
 			if (batch.when > nowELAPSED) {
 				// Everything else is scheduled for the future
 				break;
@@ -2115,7 +2209,8 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			if(offlineInterval > 0){
 				register2Trigger = offlineInterval;	
 			} else {
-				register2Trigger = repeatInterval > 0 ? repeatInterval : Math.max(whenElapsed-registerElapsed, 0);
+				register2Trigger = repeatInterval > 0 ? repeatInterval : 
+					Math.max(whenElapsed-registerElapsed, getIntervalFromHistory());
 				if (register2Trigger > AlarmManager.INTERVAL_HOUR) {
 					register2Trigger = AlarmManager.INTERVAL_HOUR;
 				}
@@ -2135,8 +2230,13 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			return ret;
 		}
 
+		public long getIntervalFromHistory(){
+			WakeupEvent w = mWakeupRecords.get(getId());
+			return w != null? Math.max(when - w.when + w.mDelay, 0): 0;	
+		}
+
 		public int[] getHardwareUsage(){
-		;	WakeupEvent w = mWakeupRecords.get(getId());
+			WakeupEvent w = mWakeupRecords.get(getId());
 			return w != null? w.mHardwareUsage : null;	
 		}
 
@@ -2181,6 +2281,8 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				sb.append(type);
 				sb.append(" ");
 				sb.append(operation.getTargetPackage());
+				sb.append(" id ");
+				sb.append(getId());
 				sb.append('}');
 				return sb.toString();
 			}
@@ -2257,24 +2359,31 @@ class AlarmManagerService extends IAlarmManager.Stub {
 						Slog.d(HOWARD_TAG, "Checking for alarms... rtc=" + nowRTC + ", elapsed=" + nowELAPSED);
 					}
 
-					//                    if (WAKEUP_STATS) {
-					//                        if ((result & IS_WAKEUP_MASK) != 0) {
-					//                            long newEarliest = nowRTC - RECENT_WAKEUP_PERIOD;
-					//                            int n = 0;
-					//                            for (WakeupEvent event : mRecentWakeups) {
-					//                                if (event.when > newEarliest) break;
-					//                                n++; // number of now-stale entries at the list head
-					//                            }
-					//                            for (int i = 0; i < n; i++) {
-					//                                mRecentWakeups.remove();
-					//                            }
-					//
-					//                            recordWakeupAlarms(mAlarmBatches, nowELAPSED, nowRTC);
-					//                        }
-					//                    }
-
 					if(HOWARD_POLICY){
 						triggerAlarmsLockedHoward(triggerList, nowELAPSED, nowRTC);
+						if (DEBUG_HOWARD_LEVEL2){
+							Slog.d(HOWARD_TAG, "Before rebatch..");
+							if(mNextWakeupBatch != null){
+								Slog.d(HOWARD_TAG, "Next wake up batch: " + mNextWakeupBatch.when);
+								logBatchLockedHoward(mNextWakeupBatch);
+							}
+							if(mNextNonWakeupBatch != null){
+								Slog.d(HOWARD_TAG, "Next non-wake up batch: " + mNextNonWakeupBatch.when);
+								logBatchLockedHoward(mNextNonWakeupBatch);
+							}
+						}
+						// rebatchAllAlarms();	
+						if (DEBUG_HOWARD_LEVEL2){
+							Slog.d(HOWARD_TAG, "After rebatch..");
+							if(mNextWakeupBatch != null){
+								Slog.d(HOWARD_TAG, "Next wake up batch: " + mNextWakeupBatch.when);
+								logBatchLockedHoward(mNextWakeupBatch);
+							}
+							if(mNextNonWakeupBatch != null){
+								Slog.d(HOWARD_TAG, "Next non-wake up batch: " + mNextNonWakeupBatch.when);
+								logBatchLockedHoward(mNextNonWakeupBatch);
+							}
+						}
 						// !!!!!!!!!!!!!!!!!!!!!!!! triggerAlarmsLockedHoward(triggerList, nowELAPSED, nowRTC);
 					} else {
 						triggerAlarmsLocked(triggerList, nowELAPSED, nowRTC);
