@@ -87,27 +87,48 @@ class AlarmManagerService extends IAlarmManager.Stub {
 	private static final int TYPE_NONWAKEUP_MASK = 0x1; // low bit => non-wakeup
 
 	private static final String TAG = "AlarmManager";
-	private static final String HOWARD_TAG = "HOWARD_TAG";
 	private static final String ClockReceiver_TAG = "ClockReceiver";
 	private static final boolean localLOGV = true;
-	private static final boolean DEBUG_BATCH = localLOGV || false;
+	private static final boolean DEBUG_BATCH = localLOGV && false;
 	private static final boolean DEBUG_VALIDATE = false;
-	private static boolean DEBUG_HOWARD = false;
-	private static boolean DEBUG_HOWARD_LEVEL2 = false;
 	private static final int ALARM_EVENT = 1;
 	private static final String TIMEZONE_PROPERTY = "persist.sys.timezone";
 
 	private static final Intent mBackgroundIntent
 		= new Intent().addFlags(Intent.FLAG_FROM_BACKGROUND);
 	private static final IncreasingTimeOrder sIncreasingTimeOrder = new IncreasingTimeOrder();
+	
+	private final Context mContext;
+
+	private final LocalLog mLog = new LocalLog(TAG);
+
+	private Object mLock = new Object();
+
+	private int mDescriptor;
+	private long mNextWakeup;
+	private long mNextNonWakeup;
+	private int mBroadcastRefCount = 0;
+	private PowerManager.WakeLock mWakeLock;
+	private ArrayList<InFlight> mInFlight = new ArrayList<InFlight>();
+	private final AlarmThread mWaitThread = new AlarmThread();
+	private final AlarmHandler mHandler = new AlarmHandler();
+	private ClockReceiver mClockReceiver;
+	private UninstallReceiver mUninstallReceiver;
+	private final ResultReceiver mResultReceiver = new ResultReceiver();
+	private final PendingIntent mTimeTickSender;
+	private final PendingIntent mDateChangeSender;
+
+	private static final String HOWARD_TAG = "HOWARD_TAG";
+	private static final boolean DEBUG_HOWARD = false;
+	private static final boolean DEBUG_HOWARD_LEVEL2 = false;
 
 	private static final boolean WAKEUP_STATS = true;
-	private static final boolean HOWARD_POLICY = false;
+	private static final boolean HOWARD_POLICY = true;
 	private static final boolean OBSERVATION_APP_BEHAVIOR = false;
 	private static final boolean FIXED_INTERVAL = false;
-	private static final long FIXED_INTERVAL_LENGTH = 60000;
+	private static final long FIXED_INTERVAL_LENGTH = 60 * 1000;
 	private static final boolean EXTREME_CASE = false;
-	private static final boolean DISABLE_GOOGLE_LOCATION_ALARM = true;
+	private static final boolean DISABLE_GOOGLE_LOCATION_ALARM = false;
 	private static final int LOOP_UPBOUND = 1000;
 
 	private static final String[][] OFFLINE_SUPPORT = {
@@ -135,27 +156,14 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		{"AlarmTaskSchedule.com.sds.android.ttpod", "360000", "1"},
 	};
 	
-	private static final String EXP_APP_ALARM = "ComponentInfo{com.rakesh.alarmmanagerexample2/com.rakesh.alarmmanagerexample.AlarmManagerBroadcastReceiver}";
-	
-	private final Context mContext;
+	private static final String EXP_APP_ALARM = "ComponentInfo{com.rakesh.alarmmanagerexample/com.rakesh.alarmmanagerexample.AlarmManagerBroadcastReceiver}";
 
-	private final LocalLog mLog = new LocalLog(TAG);
-
-	private Object mLock = new Object();
-
-	private int mDescriptor;
-	private long mNextWakeup;
-	private long mNextNonWakeup;
-	private int mBroadcastRefCount = 0;
-	private PowerManager.WakeLock mWakeLock;
-	private ArrayList<InFlight> mInFlight = new ArrayList<InFlight>();
-	private final AlarmThread mWaitThread = new AlarmThread();
-	private final AlarmHandler mHandler = new AlarmHandler();
-	private ClockReceiver mClockReceiver;
-	private UninstallReceiver mUninstallReceiver;
-	private final ResultReceiver mResultReceiver = new ResultReceiver();
-	private final PendingIntent mTimeTickSender;
-	private final PendingIntent mDateChangeSender;
+	private final LinkedList<WakeupEvent> mRecentWakeups = new LinkedList<WakeupEvent>();
+	private final long RECENT_WAKEUP_PERIOD = 1000L * 60 * 60 * 24; // one day
+	private final static HashMap<String, WakeupEvent> mWakeupRecords = new HashMap<String, WakeupEvent>();
+	private Batch mNextWakeupBatch = null;
+	private Batch mNextNonWakeupBatch = null;
+	private static final float INTERVAL_RATIO = 0.99f;
 
 	/*
 	 * A record for each wake up event with hardware usage.
@@ -181,13 +189,6 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			uid = theUid;
 			id = new String(theId);
 		}
-
-		/*private static String getPackageNameByUid(final int uid) {
-		  PackageManager pm = this.getPackageManager();
-		  final String[] pkgs = pm.getPackagesForUid(uid);
-		  if (pkgs != null && pkgs.length > 0) return pkgs[0];
-		  return null; 
-		  } */
 
 		public WakeupEvent(long theTime, int theUid, String theId, int type, 
 				long duration, long delay, long window, long interval, long register2Trigger, 
@@ -261,39 +262,6 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			return sb.toString();
 		}
 	}
-
-	static class DecisionEvent {
-		long rtcTime;
-		int numEvent, numOverlappedEvent;
-
-		public DecisionEvent(long _rtcTime, int _numEvent, int _numOverlappedEvent){
-			rtcTime = _rtcTime;
-			numEvent = _numEvent;
-			numOverlappedEvent = _numOverlappedEvent;
-		}	
-
-		public String toString() {
-			StringBuffer sb = new StringBuffer(256);
-
-			sb.append("Time: ");
-			sb.append(rtcTime);
-
-			sb.append(" NumEvent: ");
-			sb.append(numEvent);
-
-			sb.append(" NumOverlappedEvent: ");
-			sb.append(numOverlappedEvent);
-
-			return sb.toString();
-		}
-	}
-
-	private final LinkedList<WakeupEvent> mRecentWakeups = new LinkedList<WakeupEvent>();
-	private final long RECENT_WAKEUP_PERIOD = 1000L * 60 * 60 * 24; // one day
-	private final static HashMap<String, WakeupEvent> mWakeupRecords = new HashMap<String, WakeupEvent>();
-	private final LinkedList<DecisionEvent> mRecentDecisionEvent = new LinkedList<DecisionEvent>();    
-	private Batch mNextWakeupBatch = null;
-	private static final float INTERVAL_RATIO = 0.99f;
 	
 	static final class Batch {
 		long start;     // These endpoints are always in ELAPSED
@@ -312,31 +280,27 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		Batch() {
 			start = 0;
 			end = Long.MAX_VALUE;
-			if(HOWARD_POLICY){
-				intervalStart = 0;
-				intervalEnd = Long.MAX_VALUE;
-				when = 0;
-				deadline = 0;
-				hardwareUsage = null;
-				isPerceivable = false;
-				triggerNextTime = false;
-			}
+			intervalStart = 0;
+			intervalEnd = Long.MAX_VALUE;
+			when = 0;
+			deadline = 0;
+			hardwareUsage = null;
+			isPerceivable = false;
+			triggerNextTime = false;
 		}
 
 		Batch(Alarm seed) {
 			start = seed.whenElapsed;
 			end = seed.maxWhen;
-			if(HOWARD_POLICY){
-				long[] interval = seed.getInterval();
-				intervalStart = interval[0];
-				intervalEnd = interval[1];
-				isPerceivable = seed.isPerceivable();
-				deadline = isPerceivable ? end : intervalEnd;
-				when = start;
-				hardwareUsage = null;
-				addHardwareUsage(seed.getHardwareUsage());
-				triggerNextTime = false;
-			}
+			long[] interval = seed.getInterval();
+			intervalStart = interval[0];
+			intervalEnd = interval[1];
+			isPerceivable = seed.isPerceivable();
+			deadline = isPerceivable ? end : intervalEnd;
+			when = start;
+			hardwareUsage = null;
+			addHardwareUsage(seed.getHardwareUsage());
+			triggerNextTime = false;
 			alarms.add(seed);
 		}
 
@@ -354,7 +318,11 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		}
 
 		boolean canTrigger(long whenElapsed){
-			return (when <= whenElapsed && deadline >= whenElapsed);
+			if(isPerceivable){
+				return (when <= whenElapsed);
+			} else {
+				return (intervalStart <= whenElapsed);
+			}
 		}
 
 		void addHardwareUsage(int[] usage){
@@ -582,28 +550,26 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				b.append(" num="); b.append(size());
 				b.append(" start="); b.append(start);
 				b.append(" end="); b.append(end);
-				if (HOWARD_POLICY){
-					b.append(" intervalStart="); b.append(intervalStart);
-					b.append(" intervalEnd="); b.append(intervalEnd);
-					b.append(" when="); b.append(when);
-					b.append(" deadline="); b.append(deadline);
-					b.append(" weight="); b.append(getWeight());
-					if(hardwareUsage != null){
-						b.append(" hardwareUsage=[");
-						for(int i = 0; i < hardwareUsage.length; i++){
-							b.append(hardwareUsage[i]);
-							b.append(" ");
-						}
-						b.append("]");
-					} else {
-						b.append(" hardwareUsage=null");
+				b.append(" intervalStart="); b.append(intervalStart);
+				b.append(" intervalEnd="); b.append(intervalEnd);
+				b.append(" when="); b.append(when);
+				b.append(" deadline="); b.append(deadline);
+				b.append(" weight="); b.append(getWeight());
+				if(hardwareUsage != null){
+					b.append(" hardwareUsage=[");
+					for(int i = 0; i < hardwareUsage.length; i++){
+						b.append(hardwareUsage[i]);
+						b.append(" ");
 					}
-					if (isPerceivable) {
-						b.append(" PERCEIVABLE");
-					}
-					if (triggerNextTime) {
-						b.append(" TRIGGER_NEXT_TIME");
-					}
+					b.append("]");
+				} else {
+					b.append(" hardwareUsage=null");
+				}
+				if (isPerceivable) {
+					b.append(" PERCEIVABLE");
+				}
+				if (triggerNextTime) {
+					b.append(" TRIGGER_NEXT_TIME");
 				}
 				if (standalone) {
 					b.append(" STANDALONE");
@@ -644,7 +610,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			if(HOWARD_POLICY){
 				when1 = b1.when;
 				when2 = b2.when;
-				/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!11
+				/* Old policy: maximum connected component.
 				when1 = b1.deadline;
 				when2 = b2.deadline;
 				*/
@@ -703,58 +669,24 @@ class AlarmManagerService extends IAlarmManager.Stub {
 	}
 
 	// Return the index of the matching batch, or -1 if none found.
-	int attemptCoalesceLocked(long whenElapsed, long maxWhen, Alarm a) {
+	int attemptCoalesceLocked(long whenElapsed, long maxWhen) {
 		final int N = mAlarmBatches.size();
-		if (HOWARD_POLICY){	
-			long[] aWindow = a.getWindow();
-			long[] aInterval = a.getInterval();
-			Batch tmp = new Batch(a);
-			MultiResourceManager.SIMILARITY t = MultiResourceManager.SIMILARITY.LOW, 
-				h = MultiResourceManager.SIMILARITY.LOW;
-			int highestIndex = -1;
-			for (int i = 0; i < N; i++) {
-				Batch b = mAlarmBatches.get(i);
-				if(b.standalone){
-					continue;
-				}
-				MultiResourceManager.SIMILARITY timeSimilarity = MultiResourceManager.getTimeSimilarity(aWindow[0], aWindow[1], aInterval[0], aInterval[1], b.start, b.end, b.intervalStart, b.intervalEnd), hardwareSimilarity = MultiResourceManager.getHardwareSimilarity(a.getHardwareUsage(), b.hardwareUsage);
-				if(isMergeable(tmp, b) && MultiResourceManager.isHigherSimilarity(t, h, timeSimilarity, hardwareSimilarity, null, null, null)){
-					highestIndex = i;
-					t = timeSimilarity;
-					h = hardwareSimilarity;
-				}			
-
-				/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-				if (timeSimilarity == MultiResourceManager.SIMILARITY.HIGH && hardwareSimilarity == MultiResourceManager.SIMILARITY.HIGH) {
-					return i;
-				}*/
-			}
-
-			if (DEBUG_HOWARD) {
-				Slog.d(HOWARD_TAG, "");
-				Slog.d(HOWARD_TAG, "Original batches:");
-				logBatchesLockedHoward(mAlarmBatches);
-				Slog.d(HOWARD_TAG, "");
-				Slog.d(HOWARD_TAG, "Add batches:");
-				logBatchLockedHoward(tmp);
-				Slog.d(HOWARD_TAG, "");
-				Slog.d(HOWARD_TAG, "Highest index: " + highestIndex);
-			}
-	
-			return highestIndex;
-		} else {
-			for (int i = 0; i < N; i++) {
-				Batch b = mAlarmBatches.get(i);
-				if (!b.standalone && b.canHold(whenElapsed, maxWhen)) {
-					return i;
-				}
+		
+		for (int i = 0; i < N; i++) {
+			Batch b = mAlarmBatches.get(i);
+			if (!b.standalone && b.canHold(whenElapsed, maxWhen)) {
+				return i;
 			}
 		}
+
 		return -1;
 	}
 
 	// The RTC clock has moved arbitrarily, so we need to recalculate all the batching
 	void rebatchAllAlarms() {
+		if (localLOGV) {
+			Slog.v(TAG, "rebatchAllAlarms()");
+		}
 		synchronized (mLock) {
 			rebatchAllAlarmsLocked(true);
 		}
@@ -769,7 +701,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			Batch batch = oldSet.get(batchNum);
 			final int N = batch.size();
 			for (int i = 0; i < N; i++) {
-				Alarm a = batch.get(i);
+			Alarm a = batch.get(i);
 				long whenElapsed = convertToElapsed(a.when, a.type);
 				final long maxElapsed;
 				if (a.whenElapsed == a.maxWhen) {
@@ -812,36 +744,6 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			mFilterStats = fs;
 		}
 	}
-	
-	private static int getOfflineSupport(String id, int index){
-		for(int i = 0; i < OFFLINE_SUPPORT.length; i++){
-			if(id.contains(OFFLINE_SUPPORT[i][0])){
-				return Integer.parseInt(OFFLINE_SUPPORT[i][index]);
-			}
-		}
-		return 0;
-	}
-
-	private static boolean isExpApp(PendingIntent pi){
-		if(pi.getIntent() != null && pi.getIntent().getComponent() != null
-			&& pi.getIntent().getComponent().toString().equals(EXP_APP_ALARM)){
-			int action = Integer.parseInt(pi.getIntent().getAction());
-			if(action >= 1 && action <= 35){
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	private static int[] getExpAppHardware(PendingIntent pi){
-		int[] ret = new int[MultiResourceManager.NUM_HARDWARE];
-		int action = Integer.parseInt(pi.getIntent().getAction());
-
-		ret[(action-1)/5]++;
-
-		return ret;
-	} 
 
 	private static final class FilterStats {
 		final BroadcastStats mBroadcastStats;
@@ -1101,19 +1003,26 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				operation, workSource, SystemClock.elapsedRealtime());
 		removeLocked(operation);
 
-		int whichBatch = (isStandalone) ? -1 : attemptCoalesceLocked(whenElapsed, maxWhen, a);
+		boolean newStart = false;
+		int whichBatch;
+		if(HOWARD_POLICY){
+			whichBatch = (isStandalone) ? -1 : attemptCoalesceLockedHoward(a);
+		} else {
+			whichBatch = (isStandalone) ? -1 : attemptCoalesceLocked(whenElapsed, maxWhen);
+		}
+		
 		if(OBSERVATION_APP_BEHAVIOR)	whichBatch = -1;
 		if (whichBatch < 0) {
 			Batch batch = new Batch(a);
 			batch.standalone = isStandalone;
-			addBatchLocked(mAlarmBatches, batch);
+			newStart = addBatchLocked(mAlarmBatches, batch);
 		} else {
 			Batch batch = mAlarmBatches.get(whichBatch);
 			if (batch.add(a)) {
 				// The start time of this batch advanced, so batch ordering may
 				// have just been broken.  Move it to where it now belongs.
 				mAlarmBatches.remove(whichBatch);
-				addBatchLocked(mAlarmBatches, batch);
+				newStart = addBatchLocked(mAlarmBatches, batch);
 			}
 		}
 
@@ -1127,8 +1036,12 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				rebatchAllAlarmsLocked(false);
 			}
 		}
-
-		rescheduleKernelAlarmsLocked();
+	
+		if(HOWARD_POLICY){
+			rescheduleKernelAlarmsLockedHoward();
+		} else {
+			rescheduleKernelAlarmsLocked();
+		}
 	}
 
 	private void logBatchesLocked() {
@@ -1177,119 +1090,6 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		return null;
 	}
 
-	private void logBatchLockedHoward(Batch b){
-		ByteArrayOutputStream bs = new ByteArrayOutputStream(2048);
-		PrintWriter pw = new PrintWriter(bs);
-		final long nowRTC = System.currentTimeMillis();
-		final long nowELAPSED = SystemClock.elapsedRealtime();
-		pw.append("Batch "); pw.print("0"); pw.append(": "); pw.println(b);
-		dumpAlarmList(pw, b.alarms, "  ", nowELAPSED, nowRTC);
-		pw.flush();
-		Slog.d(HOWARD_TAG, bs.toString());
-		bs.reset();
-	}
-
-	private void logBatchesLockedHoward(ArrayList<Batch> batches){
-		ByteArrayOutputStream bs = new ByteArrayOutputStream(2048);
-		PrintWriter pw = new PrintWriter(bs);
-		final long nowRTC = System.currentTimeMillis();
-		final long nowELAPSED = SystemClock.elapsedRealtime();
-		final int NZ = batches.size();
-		for (int iz = 0; iz < NZ; iz++) {
-			Batch bz = batches.get(iz);
-			pw.append("Batch "); pw.print(iz); pw.append(": "); pw.println(bz);
-			dumpAlarmList(pw, bz.alarms, "  ", nowELAPSED, nowRTC);
-			pw.flush();
-			Slog.d(HOWARD_TAG, bs.toString());
-			bs.reset();
-		}
-	}
-
-	private ArrayList<Batch> getOverlappedAlarms(final Batch b){
-		ArrayList<Batch> ret = new ArrayList<Batch>();
-
-		final int N = mAlarmBatches.size();	
-		for (int i = 0; i < N; i++) {
-			Batch a = mAlarmBatches.get(i);
-			MultiResourceManager.SIMILARITY time = MultiResourceManager.getTimeSimilarity(a.start, a.end, a.intervalStart, a.intervalEnd, b.start, b.end, b.intervalStart, b.intervalEnd);
-			if(time.equals(MultiResourceManager.SIMILARITY.HIGH)){
-				ret.add(a);
-				continue;
-			}
-
-			if(!a.isPerceivable && !b.isPerceivable){
-				if(time.equals(MultiResourceManager.SIMILARITY.MID)){
-					ret.add(a);
-				}
-			}
-		}
-
-		return ret;
-	}
-
-	private ArrayList<Batch> getProcessedAlarms(final Batch firstWakeup, final ArrayList<Batch> ori){
-		ArrayList<Batch> ret = ori;
-
-		boolean changeFlag = true;
-		int ite = 0;
-		
-		if (DEBUG_HOWARD) {
-			Slog.d(HOWARD_TAG, "");
-			Slog.d(HOWARD_TAG, "Original batches:");
-			logBatchesLockedHoward(mAlarmBatches);
-		}
-		while(changeFlag){
-			changeFlag = false;
-			ite++;
-			if(ite > LOOP_UPBOUND)	break;
-
-			if (DEBUG_HOWARD) {
-				Slog.d(HOWARD_TAG, "");
-				Slog.d(HOWARD_TAG, ite + " Processed Alarms:");
-				logBatchesLockedHoward(ret);
-			}
-				
-			for(int n = 0; n < ret.size(); n++){
-				Batch b = ret.get(n);
-				MultiResourceManager.SIMILARITY time = MultiResourceManager.getTimeSimilarity(firstWakeup.start, firstWakeup.end, firstWakeup.intervalStart, firstWakeup.intervalEnd, b.start, b.end, b.intervalStart, b.intervalEnd);
-				MultiResourceManager.SIMILARITY hardware = MultiResourceManager.getHardwareSimilarity(firstWakeup.hardwareUsage, b.hardwareUsage);
-			
-				if( (time == MultiResourceManager.SIMILARITY.HIGH && hardware == MultiResourceManager.SIMILARITY.HIGH) ||
-					(time == MultiResourceManager.SIMILARITY.HIGH && b.hardwareUsage == null) ){
-					continue;
-				}
-
-				final int N = mAlarmBatches.size();	
-				boolean higherFlag = false;
-				for (int i = 0; i < N; i++) {
-					Batch a = mAlarmBatches.get(i);		
-					if(b.equals(a))	continue;
-					if(ret.contains(a))	continue;
-					MultiResourceManager.SIMILARITY t = MultiResourceManager.getTimeSimilarity(a.start, a.end, a.intervalStart, a.intervalEnd, b.start, b.end, b.intervalStart, b.intervalEnd);
-					MultiResourceManager.SIMILARITY h = MultiResourceManager.getHardwareSimilarity(a.hardwareUsage, b.hardwareUsage);
-					
-					if (DEBUG_HOWARD) {
-						Slog.d(HOWARD_TAG, "Batch b: " + b + ". Batch a: " + a);
-						Slog.d(HOWARD_TAG, "Time Similarity: " + t + ". Hardware Similarity: " + h);
-					}
-	
-					if(MultiResourceManager.isHigherSimilarity(time, hardware, t, h, firstWakeup.hardwareUsage, b.hardwareUsage, a.hardwareUsage)){
-						Slog.d(HOWARD_TAG, "*Higher*Original Time: " + time + ". Original Hardware: " + hardware);
-						higherFlag = true;
-						changeFlag = true;
-						n--;
-						break;
-					}
-				}
-		
-				if(higherFlag)	ret.remove(b);
-			}
-
-		}
-		
-		return ret;
-	}
-
 	private ArrayList<Batch> cloneList(final ArrayList<Batch> batches){
 		ArrayList<Batch> ret = new ArrayList<Batch>(batches.size());
 		
@@ -1300,246 +1100,21 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		return ret;
 	}
 
-	/**
-	 * Check the two batches can merge or not.
-	 */ 
-	private boolean isMergeable(final Batch a, final Batch b){
-		if(a.standalone || b.standalone){
-			return false;
-		}
-		MultiResourceManager.SIMILARITY time = MultiResourceManager.getTimeSimilarity(a.start, a.end, a.intervalStart, a.intervalEnd, b.start, b.end, b.intervalStart, b.intervalEnd);
-		MultiResourceManager.SIMILARITY hardware = MultiResourceManager.getHardwareSimilarity(a.hardwareUsage, b.hardwareUsage);
-
-		if(time.equals(MultiResourceManager.SIMILARITY.HIGH) && hardware.equals(MultiResourceManager.SIMILARITY.HIGH)){
-			// <H, H> case.
-			return true;
-		}
-		if(time.equals(MultiResourceManager.SIMILARITY.HIGH) && hardware.equals(MultiResourceManager.SIMILARITY.MID)){
-			// <H, M> case.
-			return true;
-		}
-		if(time.equals(MultiResourceManager.SIMILARITY.HIGH) && hardware.equals(MultiResourceManager.SIMILARITY.LOW)){
-			// <H, L> case.
-			return true;
-		}
-
-		if(!a.isPerceivable && !b.isPerceivable){
-			if(time.equals(MultiResourceManager.SIMILARITY.MID) && hardware.equals(MultiResourceManager.SIMILARITY.HIGH)){
-				// <M, H> case.
-				return true;
-			}
-			if(time.equals(MultiResourceManager.SIMILARITY.MID) && hardware.equals(MultiResourceManager.SIMILARITY.MID)){
-				// <M, M> case.
-				return true;
-			}
-		} 
-
-		return false;
-	}
-
-	/**
-	 * Find the maximum connected component and return the connected component.
-	 */
-	private Batch findMaximumConnectedBatch(){
-		final Batch firstWakeup = findFirstWakeupBatchLocked();
-		if(firstWakeup == null){
-			// Doesn't have wakeup alarms.
-			return null;
-		}
-
-		ArrayList<Batch> overlappedAlarmsOri = getOverlappedAlarms(firstWakeup);
-		if (DEBUG_HOWARD) {
-			Slog.d(HOWARD_TAG, "");
-			Slog.d(HOWARD_TAG, "Overlapped batches:");
-			logBatchesLockedHoward(overlappedAlarmsOri);
-		}	
-		//overlappedAlarmsOri = getProcessedAlarms(firstWakeup, overlappedAlarmsOri);
-		ArrayList<Batch> overlappedAlarms = cloneList(overlappedAlarmsOri);
-		ArrayList<Batch> connectedComponents = new ArrayList<Batch>();
-		ArrayList<ArrayList<Integer>> connectedBatchNumber = new ArrayList<ArrayList<Integer>>();
-
-		if (DEBUG_HOWARD) {
-			//Slog.d(HOWARD_TAG, "");
-			//Slog.d(HOWARD_TAG, "Original batches:");
-			//logBatchesLockedHoward(mAlarmBatches);
-			Slog.d(HOWARD_TAG, "");
-			Slog.d(HOWARD_TAG, "First wakeup batch:");
-			logBatchLockedHoward(firstWakeup);
-			Slog.d(HOWARD_TAG, "");
-			Slog.d(HOWARD_TAG, "Processed batches:");
-			logBatchesLockedHoward(overlappedAlarms);
-		}
-
-		// Connect the all mergeable nodes.
-		int size = overlappedAlarms.size();
-		for(int i = 0; i < size; i++){
-			Batch a = overlappedAlarms.get(i);
-
-			int mergeIndex = -1;
-			if(!a.standalone){
-				int connectedSize = connectedComponents.size();
-				for(int j = 0; j < connectedSize; j++){
-					Batch b = connectedComponents.get(j);
-
-					if(isMergeable(a, b)){
-						mergeIndex = j;
-						break;
-					}
-				}
-			}
-
-			if(mergeIndex != -1){
-				// Find a mergeable event.
-				connectedComponents.get(mergeIndex).add(a);
-				connectedBatchNumber.get(mergeIndex).add(i);
-			} else {
-				connectedComponents.add(a);
-				connectedBatchNumber.add(new ArrayList<Integer>());
-				connectedBatchNumber.get(connectedBatchNumber.size()-1).add(i);
-			}
-		}
-		
-		// Find the connected component with highest weight.
-		float highestWeight = -1;
-		int highestIndex = -1;
-		size = connectedComponents.size();
-		for(int i = 0; i < size; i++){
-			Batch b = connectedComponents.get(i);
-			if(!b.hasWakeups())	continue;
-			float weight = b.getWeight(); 
-			if(weight > highestWeight){
-				highestWeight = weight; 
-				highestIndex = i; 
-			}
-		}
-
-		// Rebatch the original batches.
-		ArrayList<Integer> highestBatchNumber = connectedBatchNumber.get(highestIndex);
-		Batch b = overlappedAlarmsOri.get(highestBatchNumber.get(0));
-		size = highestBatchNumber.size();
-		for(int i = 1; i < size; i++){
-			b.add(overlappedAlarmsOri.get(highestBatchNumber.get(i)));
-		}
-		for(int i = 1; i < size; i++){
-			mAlarmBatches.remove(overlappedAlarmsOri.get(highestBatchNumber.get(i)));
-		}
-
-		if (DEBUG_HOWARD) {
-			Slog.d(HOWARD_TAG, "");
-			Slog.d(HOWARD_TAG, "Connected batch number:");
-			for(int i = 0; i < connectedBatchNumber.size(); i++){
-				ArrayList<Integer> cCN = connectedBatchNumber.get(i);
-				StringBuffer sb = new StringBuffer();
-				if(i == highestIndex){
-					sb.append("*Highest Weight*");
-				}
-				sb.append("Connected component ");
-				sb.append(i);
-				sb.append(": ");
-				for(int j = 0; j < cCN.size(); j++){
-					sb.append(cCN.get(j));
-					sb.append(" ");
-				}
-				Slog.d(HOWARD_TAG, sb.toString());
-			}
-
-			Slog.d(HOWARD_TAG, "");
-			Slog.d(HOWARD_TAG, "Connected components:");
-			logBatchesLockedHoward(connectedComponents);
-			
-			//Slog.d(HOWARD_TAG, "");
-			//Slog.d(HOWARD_TAG, "Rebatch batches:");
-			//logBatchesLockedHoward(mAlarmBatches);
-		}
-
-		return b;
-	}
-
 	private void rescheduleKernelAlarmsLocked() {
-		if(HOWARD_POLICY){	
-			// Schedule the next upcoming wakeup alarm.  If there is a deliverable batch
-			// prior to that which contains no wakeups, we schedule that as well.
-			if (mAlarmBatches.size() > 0) {
-				final Batch firstWakeup = findFirstWakeupBatchLocked();
-				final Batch firstBatch = mAlarmBatches.get(0);
-				if (firstWakeup != null && mNextWakeup != firstWakeup.when) {
-					mNextWakeup = firstWakeup.when;
-					setLocked(ELAPSED_REALTIME_WAKEUP, firstWakeup.when);
-					if (DEBUG_HOWARD_LEVEL2){
-						Slog.d(HOWARD_TAG, "Next wake up batch: " + firstWakeup.when);
-						logBatchLockedHoward(firstWakeup);
-					}
-				}
-				if (firstBatch != firstWakeup && mNextNonWakeup != firstBatch.when) {
-					mNextNonWakeup = firstBatch.when;
-					setLocked(ELAPSED_REALTIME, firstBatch.when);
-				}
+		// Schedule the next upcoming wakeup alarm.  If there is a deliverable batch
+		// prior to that which contains no wakeups, we schedule that as well.
+		if (mAlarmBatches.size() > 0) {
+			final Batch firstWakeup = findFirstWakeupBatchLocked();
+			final Batch firstBatch = mAlarmBatches.get(0);
+			if (firstWakeup != null && mNextWakeup != firstWakeup.start) {
+				mNextWakeup = firstWakeup.start;
+				setLocked(ELAPSED_REALTIME_WAKEUP, firstWakeup.start);
 			}
-			/* !!!!!!!!!!!!!!!!!!!!!
-			if (mAlarmBatches.size() > 0) {	
-				final Batch firstWakeup = findMaximumConnectedBatch();
-				final Batch firstBatch = mAlarmBatches.get(0);
-				if (firstWakeup != null && mNextWakeup != firstWakeup.when) {
-					mNextWakeup = firstWakeup.when;
-					if(mNextWakeupBatch != null){
-						mNextWakeupBatch.triggerNextTime = false;
-					}
-					mNextWakeupBatch = firstWakeup;
-					mNextWakeupBatch.triggerNextTime = true;
-					setLocked(ELAPSED_REALTIME_WAKEUP, firstWakeup.when);
-					if (DEBUG_HOWARD_LEVEL2){
-						Slog.d(HOWARD_TAG, "Next wake up batch: " + firstWakeup.when);
-						logBatchLockedHoward(mNextWakeupBatch);
-					}
-				}
-				if (firstBatch != firstWakeup && mNextNonWakeup != firstBatch.when) {
-					mNextNonWakeup = firstBatch.when;
-					setLocked(ELAPSED_REALTIME, firstBatch.when);
-					if (DEBUG_HOWARD_LEVEL2){
-						Slog.d(HOWARD_TAG, "Next non-wake up batch: " + firstBatch.when);
-						logBatchLockedHoward(firstBatch);
-					}
-				}
-			}*/
-		} else {
-			// Schedule the next upcoming wakeup alarm.  If there is a deliverable batch
-			// prior to that which contains no wakeups, we schedule that as well.
-			if (mAlarmBatches.size() > 0) {
-				final Batch firstWakeup = findFirstWakeupBatchLocked();
-				final Batch firstBatch = mAlarmBatches.get(0);
-				if (firstWakeup != null && mNextWakeup != firstWakeup.start) {
-					mNextWakeup = firstWakeup.start;
-					setLocked(ELAPSED_REALTIME_WAKEUP, firstWakeup.start);
-				}
-				if (firstBatch != firstWakeup && mNextNonWakeup != firstBatch.start) {
-					mNextNonWakeup = firstBatch.start;
-					setLocked(ELAPSED_REALTIME, firstBatch.start);
-				}
+			if (firstBatch != firstWakeup && mNextNonWakeup != firstBatch.start) {
+				mNextNonWakeup = firstBatch.start;
+				setLocked(ELAPSED_REALTIME, firstBatch.start);
 			}
 		}
-	}
-
-	/**
-	 * Feedback from the resource manager.
-	 */
-	public void setLastGrantHardware(int uid, int hardware){
-		int size = mRecentWakeups.size();
-		for(int i = size-1; i >= 0; i--){
-			WakeupEvent e = mRecentWakeups.get(i);
-			if(e.uid == uid){
-				e.mHardwareUsage[hardware]++;
-				break;
-			}
-		}
-	
-		for (Object key : mWakeupRecords.keySet()) {
-			WakeupEvent e = mWakeupRecords.get(key);
-			if(e.uid == uid){
-				e.mHardwareUsage[hardware]++;
-				break;
-				
-			}
-		}	
 	}
 
 	public void setTime(long millis) {
@@ -1672,8 +1247,7 @@ class AlarmManagerService extends IAlarmManager.Stub {
 		if (mDescriptor != -1)
 		{
 			if(FIXED_INTERVAL){
-				final long nowELAPSED = SystemClock.elapsedRealtime();
-				when = nowELAPSED + FIXED_INTERVAL_LENGTH;	
+				when = ((when/FIXED_INTERVAL_LENGTH)+1)*FIXED_INTERVAL_LENGTH;
 			}
 
 			// The kernel never triggers alarms with negative wakeup times
@@ -1730,6 +1304,8 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				pw.print(" = "); pw.println(sdf.format(new Date(nextNonWakeupRTC)));
 				pw.print("Next wakeup: "); pw.print(mNextWakeup);
 				pw.print(" = "); pw.println(sdf.format(new Date(nextWakeupRTC)));
+
+				pw.print("HOWARD_POLICY: "); pw.println((HOWARD_POLICY? "true" : "false"));
 
 				if (mAlarmBatches.size() > 0) {
 					pw.println();
@@ -1847,23 +1423,8 @@ class AlarmManagerService extends IAlarmManager.Stub {
 					long last = -1;
 					for (WakeupEvent event : mRecentWakeups) {
 						pw.println(event.toString());
-						//                    pw.print("    "); pw.print(sdf.format(new Date(event.when)));
-						//                    pw.print('|');
-						//                    if (last < 0) {
-						//                        pw.print('0');
-						//                    } else {
-						//                        pw.print(event.when - last);
-						//                    }
-						//                    last = event.when;
-						//                    pw.print('|'); pw.print(event.uid);
-						//                    pw.print('|'); pw.print(event.action);
-						//                    pw.println();
 					}
 					pw.println();
-					pw.println("  Recent Decision History:");
-					for (DecisionEvent event : mRecentDecisionEvent) {
-						pw.println(event.toString());
-					}
 				}
 			}
 		}
@@ -1907,124 +1468,6 @@ class AlarmManagerService extends IAlarmManager.Stub {
 	private native void set(int fd, int type, long seconds, long nanoseconds);
 	private native int waitForAlarm(int fd);
 	private native int setKernelTimezone(int fd, int minuteswest);
-
-	private void triggerAlarmsLockedHoward(ArrayList<Alarm> triggerList, long nowELAPSED, long nowRTC) {
-		// batches are temporally sorted, so we need only pull from the
-		// start of the list until we either empty it or hit a batch
-		// that is not yet deliverable
-		while (mAlarmBatches.size() > 0) {
-			Batch batch = mAlarmBatches.get(0);
-
-			if (batch.when > nowELAPSED) {
-				// Everything else is scheduled for the future
-				break;
-			}
-
-			if(DEBUG_HOWARD || DEBUG_HOWARD_LEVEL2){
-				Slog.d(HOWARD_TAG, "Deliver the batch: start= " + batch.when + " nowELAPSED= " + nowELAPSED);
-				logBatchLockedHoward(batch);
-			}
-
-			// We will (re)schedule some alarms now; don't let that interfere
-			// with delivery of this current batch
-			mAlarmBatches.remove(0);
-
-			final int N = batch.size();
-			for (int i = 0; i < N; i++) {
-				Alarm alarm = batch.get(i);
-				alarm.count = 1;
-				triggerList.add(alarm);
-
-				// Recurring alarms may have passed several alarm intervals while the
-				// phone was asleep or off, so pass a trigger count when sending them.
-				if (alarm.repeatInterval > 0) {
-					// this adjustment will be zero if we're late by
-					// less than one full repeat interval
-					alarm.count += (nowELAPSED - alarm.whenElapsed) / alarm.repeatInterval;
-
-					// Also schedule its next recurrence
-					final long delta = alarm.count * alarm.repeatInterval;
-					final long nextElapsed = alarm.whenElapsed + delta;
-					setImplLocked(alarm.type, alarm.when + delta, nextElapsed, alarm.windowLength,
-							maxTriggerTime(nowELAPSED, nextElapsed, alarm.repeatInterval),
-							alarm.repeatInterval, alarm.operation, batch.standalone, true,
-							alarm.workSource);
-				}
-
-			}
-		}
-		/* !!!!!!!!!!!!!!!!!!!!!!!!!!!1
-		final Batch b = mNextWakeupBatch;
-		
-		if(b.canTrigger(nowELAPSED)){
-			mAlarmBatches.remove(b);
-			final int S = b.size();
-			if(DEBUG_HOWARD || DEBUG_HOWARD_LEVEL2){
-				Slog.d(HOWARD_TAG, "Deliver the batch:");
-				logBatchLockedHoward(b);
-			}
-			for (int i = 0; i < S; i++) {
-				Alarm alarm = b.get(i);
-				alarm.count = 1;
-				triggerList.add(alarm);
-	
-				// Recurring alarms may have passed several alarm intervals while the
-				// phone was asleep or off, so pass a trigger count when sending them.
-				if (alarm.repeatInterval > 0) {
-					// this adjustment will be zero if we're late by
-					// less than one full repeat interval
-					alarm.count += (nowELAPSED - alarm.whenElapsed) / alarm.repeatInterval;
-			
-					// Also schedule its next recurrence
-					final long delta = alarm.count * alarm.repeatInterval;
-					final long nextElapsed = alarm.whenElapsed + delta;
-					setImplLocked(alarm.type, alarm.when + delta, nextElapsed, alarm.windowLength,
-							maxTriggerTime(nowELAPSED, nextElapsed, alarm.repeatInterval),
-							alarm.repeatInterval, alarm.operation, b.standalone, true,
-							alarm.workSource);
-				}
-			}
-		}
-
-		while (mAlarmBatches.size() > 0) {
-			Batch batch = mAlarmBatches.get(0);
-
-			if ( batch.deadline > nowELAPSED) {
-				break;
-			}
-
-			// We will (re)schedule some alarms now; don't let that interfere
-			// with delivery of this current batch
-			mAlarmBatches.remove(0);
-			if(DEBUG_HOWARD || DEBUG_HOWARD_LEVEL2){
-				logBatchLockedHoward(batch);
-			}
-
-			final int N = batch.size();
-			for (int i = 0; i < N; i++) {
-				Alarm alarm = batch.get(i);
-				alarm.count = 1;
-				triggerList.add(alarm);
-
-				// Recurring alarms may have passed several alarm intervals while the
-				// phone was asleep or off, so pass a trigger count when sending them.
-				if (alarm.repeatInterval > 0) {
-					// this adjustment will be zero if we're late by
-					// less than one full repeat interval
-					alarm.count += (nowELAPSED - alarm.whenElapsed) / alarm.repeatInterval;
-
-					// Also schedule its next recurrence
-					final long delta = alarm.count * alarm.repeatInterval;
-					final long nextElapsed = alarm.whenElapsed + delta;
-					setImplLocked(alarm.type, alarm.when + delta, nextElapsed, alarm.windowLength,
-							maxTriggerTime(nowELAPSED, nextElapsed, alarm.repeatInterval),
-							alarm.repeatInterval, alarm.operation, batch.standalone, true,
-							alarm.workSource);
-				}
-
-			}
-		}*/
-	}
 
 	private void triggerAlarmsLocked(ArrayList<Alarm> triggerList, long nowELAPSED, long nowRTC) {
 		// batches are temporally sorted, so we need only pull from the
@@ -2115,7 +1558,8 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			if(offlineInterval > 0){
 				register2Trigger = offlineInterval;	
 			} else {
-				register2Trigger = repeatInterval > 0 ? repeatInterval : Math.max(whenElapsed-registerElapsed, 0);
+				register2Trigger = repeatInterval > 0 ? repeatInterval : 
+					Math.max(whenElapsed-registerElapsed, getIntervalFromHistory());
 				if (register2Trigger > AlarmManager.INTERVAL_HOUR) {
 					register2Trigger = AlarmManager.INTERVAL_HOUR;
 				}
@@ -2135,8 +1579,13 @@ class AlarmManagerService extends IAlarmManager.Stub {
 			return ret;
 		}
 
+		public long getIntervalFromHistory(){
+			WakeupEvent w = mWakeupRecords.get(getId());
+			return w != null? Math.max(when - w.when + w.mDelay, 0): 0;	
+		}
+
 		public int[] getHardwareUsage(){
-		;	WakeupEvent w = mWakeupRecords.get(getId());
+			WakeupEvent w = mWakeupRecords.get(getId());
 			return w != null? w.mHardwareUsage : null;	
 		}
 
@@ -2181,6 +1630,8 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				sb.append(type);
 				sb.append(" ");
 				sb.append(operation.getTargetPackage());
+				sb.append(" id ");
+				sb.append(getId());
 				sb.append('}');
 				return sb.toString();
 			}
@@ -2257,30 +1708,14 @@ class AlarmManagerService extends IAlarmManager.Stub {
 						Slog.d(HOWARD_TAG, "Checking for alarms... rtc=" + nowRTC + ", elapsed=" + nowELAPSED);
 					}
 
-					//                    if (WAKEUP_STATS) {
-					//                        if ((result & IS_WAKEUP_MASK) != 0) {
-					//                            long newEarliest = nowRTC - RECENT_WAKEUP_PERIOD;
-					//                            int n = 0;
-					//                            for (WakeupEvent event : mRecentWakeups) {
-					//                                if (event.when > newEarliest) break;
-					//                                n++; // number of now-stale entries at the list head
-					//                            }
-					//                            for (int i = 0; i < n; i++) {
-					//                                mRecentWakeups.remove();
-					//                            }
-					//
-					//                            recordWakeupAlarms(mAlarmBatches, nowELAPSED, nowRTC);
-					//                        }
-					//                    }
-
 					if(HOWARD_POLICY){
 						triggerAlarmsLockedHoward(triggerList, nowELAPSED, nowRTC);
-						// !!!!!!!!!!!!!!!!!!!!!!!! triggerAlarmsLockedHoward(triggerList, nowELAPSED, nowRTC);
+						rescheduleKernelAlarmsLockedHoward();
 					} else {
 						triggerAlarmsLocked(triggerList, nowELAPSED, nowRTC);
+						rescheduleKernelAlarmsLocked();
 					}
-					rescheduleKernelAlarmsLocked();
-
+					
 					// now deliver the alarm intents
 					for (int i=0; i<triggerList.size(); i++) {
 						Alarm alarm = triggerList.get(i);
@@ -2608,5 +2043,620 @@ class AlarmManagerService extends IAlarmManager.Stub {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Feedback from the resource manager.
+	 */
+	public void setLastGrantHardware(int uid, int hardware){
+		int size = mRecentWakeups.size();
+		for(int i = size-1; i >= 0; i--){
+			WakeupEvent e = mRecentWakeups.get(i);
+			if(e.uid == uid){
+				e.mHardwareUsage[hardware]++;
+				break;
+			}
+		}
+	
+		for (Object key : mWakeupRecords.keySet()) {
+			WakeupEvent e = mWakeupRecords.get(key);
+			if(e.uid == uid){
+				e.mHardwareUsage[hardware]++;
+				break;
+				
+			}
+		}	
+	}
+
+	/*
+	 * Called when adding an alarm.
+	 */
+	int attemptCoalesceLockedHoward(Alarm a) {
+		final int N = mAlarmBatches.size();
+		long[] aWindow = a.getWindow();
+		long[] aInterval = a.getInterval();
+		Batch tmp = new Batch(a);
+		MultiResourceManager.SIMILARITY t = MultiResourceManager.SIMILARITY.LOW, 
+			h = MultiResourceManager.SIMILARITY.LOW;
+		int highestIndex = -1;
+		for (int i = 0; i < N; i++) {
+			Batch b = mAlarmBatches.get(i);
+			// if(b.when > tmp.deadline){
+			// 	break;
+			// }
+			if(b.standalone){
+				continue;
+			}
+			MultiResourceManager.SIMILARITY timeSimilarity = MultiResourceManager.getTimeSimilarity(aWindow[0], aWindow[1], aInterval[0], aInterval[1], b.start, b.end, b.intervalStart, b.intervalEnd), hardwareSimilarity = MultiResourceManager.getHardwareSimilarity(a.getHardwareUsage(), b.hardwareUsage);
+
+			if(isMergeable(tmp, b, timeSimilarity, hardwareSimilarity) && isHigherSimilarity(t, h, timeSimilarity, hardwareSimilarity)){
+				highestIndex = i;
+				t = timeSimilarity;
+				h = hardwareSimilarity;
+			}			
+
+			/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+			if (timeSimilarity == MultiResourceManager.SIMILARITY.HIGH && hardwareSimilarity == MultiResourceManager.SIMILARITY.HIGH) {
+				return i;
+			} !!!!!!!!!!!!!!!!!!!!!!!!!!!!!! */
+		}
+
+		if (DEBUG_HOWARD) {
+			Slog.d(HOWARD_TAG, "");
+			Slog.d(HOWARD_TAG, "Original batches:");
+			logBatchesLockedHoward(mAlarmBatches);
+			Slog.d(HOWARD_TAG, "");
+			Slog.d(HOWARD_TAG, "Add batches:");
+			logBatchLockedHoward(tmp);
+			Slog.d(HOWARD_TAG, "");
+			Slog.d(HOWARD_TAG, "Highest index: " + highestIndex + ", time:" + t + ", hardware:" + h);
+			if(highestIndex != -1)	logBatchLockedHoward(mAlarmBatches.get(highestIndex));
+		}
+	
+		return highestIndex;
+	}
+
+	/**
+	 * Check the two batches can merge or not.
+	 */ 
+	private boolean isMergeable(final Batch a, final Batch b){
+		if(a.standalone || b.standalone){
+			return false;
+		}
+		MultiResourceManager.SIMILARITY time = MultiResourceManager.getTimeSimilarity(a.start, a.end, a.intervalStart, a.intervalEnd, b.start, b.end, b.intervalStart, b.intervalEnd);
+		MultiResourceManager.SIMILARITY hardware = MultiResourceManager.getHardwareSimilarity(a.hardwareUsage, b.hardwareUsage);
+
+		return isMergeable(a, b, time, hardware);
+	}
+
+	private boolean isMergeable(final Batch a, final Batch b, MultiResourceManager.SIMILARITY time, 
+		MultiResourceManager.SIMILARITY hardware){
+		
+		if(time.equals(MultiResourceManager.SIMILARITY.HIGH) && hardware.equals(MultiResourceManager.SIMILARITY.HIGH)){
+			// <H, H> case.
+			return true;
+		}
+		if(time.equals(MultiResourceManager.SIMILARITY.HIGH) && hardware.equals(MultiResourceManager.SIMILARITY.MID)){
+			// <H, M> case.
+			return true;
+		}
+		if(time.equals(MultiResourceManager.SIMILARITY.HIGH) && hardware.equals(MultiResourceManager.SIMILARITY.LOW)){
+			// <H, L> case.
+			return true;
+		}
+
+		if(!a.isPerceivable && !b.isPerceivable){
+			if(time.equals(MultiResourceManager.SIMILARITY.MID) && hardware.equals(MultiResourceManager.SIMILARITY.HIGH)){
+				// <M, H> case.
+				return true;
+			}
+			if(time.equals(MultiResourceManager.SIMILARITY.MID) && hardware.equals(MultiResourceManager.SIMILARITY.MID)){
+				// <M, M> case.
+				return true;
+			}
+		} 
+
+		return false;
+	}
+
+	private boolean isHigherSimilarity(MultiResourceManager.SIMILARITY time, MultiResourceManager.SIMILARITY hardware, MultiResourceManager.SIMILARITY t, MultiResourceManager.SIMILARITY h){
+		if(t.higher(MultiResourceManager.SIMILARITY.LOW) && h.higher(hardware))      return true;
+		if(t.higher(time) && h.higher(hardware))        return true;
+		if(t.equals(time) && h.higher(hardware))        return true;
+		if(t.higher(time) && h.equals(hardware))        return true;
+
+		return false;
+	}
+
+
+	/*
+	 * Called when user changes the time or removing an application with registered alarm.
+	 */
+	void rebatchAllAlarmsLockedHoward(boolean doValidate) {
+		ArrayList<Batch> oldSet = (ArrayList<Batch>) mAlarmBatches.clone();
+		ArrayList<Alarm> oldAlarmSet = new ArrayList<Alarm>();
+		mAlarmBatches.clear();
+		final long nowElapsed = SystemClock.elapsedRealtime();
+		final int oldBatches = oldSet.size();
+		for (int batchNum = 0; batchNum < oldBatches; batchNum++) {
+			Batch batch = oldSet.get(batchNum);
+			final int N = batch.size();
+			for (int i = 0; i < N; i++) {
+				Alarm a = batch.get(i);
+				int index = getIndexByHardware(oldAlarmSet, a);
+				if(index != -1){
+					oldAlarmSet.add(index, a);
+				} else {
+					oldAlarmSet.add(a);
+				}
+			}
+		}	
+
+		final int N = oldAlarmSet.size();
+		for(int alarmNum = 0; alarmNum < N; alarmNum++){
+			Alarm a = oldAlarmSet.get(alarmNum);
+			long whenElapsed = convertToElapsed(a.when, a.type);
+			final long maxElapsed;
+			if (a.whenElapsed == a.maxWhen) {
+				// Exact
+				maxElapsed = whenElapsed;
+			} else {
+				// Not exact.  Preserve any explicit window, otherwise recalculate
+				// the window based on the alarm's new futurity.  Note that this
+				// reflects a policy of preferring timely to deferred delivery.
+				maxElapsed = (a.windowLength > 0)
+					? (whenElapsed + a.windowLength)
+					: maxTriggerTime(nowElapsed, whenElapsed, a.repeatInterval);
+			}
+			setImplLocked(a.type, a.when, whenElapsed, a.windowLength, maxElapsed,
+					a.repeatInterval, a.operation, false, doValidate, a.workSource);
+		}
+	}
+
+	private static int getIndexByHardware(ArrayList<Alarm> alarmSet, Alarm a){
+		float hardwareWeight = MultiResourceManager.getHardwareWeight(a.getHardwareUsage(), a.isWakeup());
+		final int N = alarmSet.size();
+		for(int i = 0; i < N; i++){
+			Alarm b = alarmSet.get(i);
+			float weight = MultiResourceManager.getHardwareWeight(b.getHardwareUsage(), b.isWakeup());
+			if(hardwareWeight > weight){
+				return i;
+			}
+		}
+		return N;
+	}
+
+	/*
+	 * Some applications' network usage aren't detected by current method.
+     * Temporarily add the network usage by offline data.
+	 * TODO: Modify the detection method.
+	 */
+	private static int getOfflineSupport(String id, int index){
+		for(int i = 0; i < OFFLINE_SUPPORT.length; i++){
+			if(id.contains(OFFLINE_SUPPORT[i][0])){
+				return Integer.parseInt(OFFLINE_SUPPORT[i][index]);
+			}
+		}
+		return 0;
+	}
+
+	/*
+	 * My experiment application.
+	 * You can get the code from: https://github.com/devil1437/AlarmManagerExample
+	 */
+	private static boolean isExpApp(PendingIntent pi){
+		if(pi.getIntent() != null && pi.getIntent().getComponent() != null
+			&& pi.getIntent().getComponent().toString().equals(EXP_APP_ALARM)){
+			int action = Integer.parseInt(pi.getIntent().getAction());
+			if(action < 10000){
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/*
+	 * 1~35: for each hardware component.
+	 * 100~9999: for application simulation.
+	 * 10000~: for other alarms.
+	 */
+	private static int[] getExpAppHardware(PendingIntent pi){
+		int[] ret = new int[MultiResourceManager.NUM_HARDWARE];
+		int action = Integer.parseInt(pi.getIntent().getAction());
+
+		if(action >= 1 && action <= 35){
+			ret[(action-1)/5]++;
+		} else {
+			int mod = action % 100;
+			switch(mod){
+				case 2:
+				case 4:
+				case 6:
+				case 7:
+				case 8:
+				case 9:
+				case 10:
+				case 11:
+				case 12:
+				case 13:
+				case 14:
+				case 15:
+				case 17:
+				case 18:
+				case 20:
+				case 21:
+					ret[MultiResourceManager.HARDWARE_NETWORK]++;
+					break;
+				case 22:
+				case 23:
+				case 24:
+					ret[MultiResourceManager.HARDWARE_AGPS]++;
+					break;
+			}
+		}
+		return ret;
+	} 
+
+	private void rescheduleKernelAlarmsLockedHoward() {
+		// Schedule the next upcoming wakeup alarm.  If there is a deliverable batch
+		// prior to that which contains no wakeups, we schedule that as well.
+		if (mAlarmBatches.size() > 0) {
+			final Batch firstWakeup = findFirstWakeupBatchLocked();
+			final Batch firstBatch = mAlarmBatches.get(0);
+			if (firstWakeup != null && mNextWakeup != firstWakeup.when) {
+				mNextWakeup = firstWakeup.when;
+				mNextWakeupBatch = firstWakeup;
+				setLocked(ELAPSED_REALTIME_WAKEUP, firstWakeup.when);	
+			}
+			if (firstBatch != firstWakeup && mNextNonWakeup != firstBatch.when) {
+				mNextNonWakeup = firstBatch.when;
+				mNextNonWakeupBatch = firstBatch;
+				setLocked(ELAPSED_REALTIME, firstBatch.when);
+			}
+		}
+		/* Old policy: maximum connected component.
+		if (mAlarmBatches.size() > 0) {	
+			final Batch firstWakeup = findMaximumConnectedBatch();
+			final Batch firstBatch = mAlarmBatches.get(0);
+			if (firstWakeup != null && mNextWakeup != firstWakeup.when) {
+				mNextWakeup = firstWakeup.when;
+				if(mNextWakeupBatch != null){
+					mNextWakeupBatch.triggerNextTime = false;
+				}
+				mNextWakeupBatch = firstWakeup;
+				mNextWakeupBatch.triggerNextTime = true;
+				setLocked(ELAPSED_REALTIME_WAKEUP, firstWakeup.when);
+				if (DEBUG_HOWARD_LEVEL2){
+					Slog.d(HOWARD_TAG, "Next wake up batch: " + firstWakeup.when);
+					logBatchLockedHoward(mNextWakeupBatch);
+				}
+			}
+			if (firstBatch != firstWakeup && mNextNonWakeup != firstBatch.when) {
+				mNextNonWakeup = firstBatch.when;
+				setLocked(ELAPSED_REALTIME, firstBatch.when);
+				if (DEBUG_HOWARD_LEVEL2){
+					Slog.d(HOWARD_TAG, "Next non-wake up batch: " + firstBatch.when);
+					logBatchLockedHoward(firstBatch);
+				}
+			}
+		}*/
+	}
+
+	private void triggerAlarmsLockedHoward(ArrayList<Alarm> triggerList, long nowELAPSED, long nowRTC) {
+		// batches are temporally sorted, so we need only pull from the
+		// start of the list until we either empty it or hit a batch
+		// that is not yet deliverable
+		while (mAlarmBatches.size() > 0) {
+			Batch batch = mAlarmBatches.get(0);
+
+			if (!batch.canTrigger(nowELAPSED)) {
+				// Everything else is scheduled for the future
+				break;
+			}
+
+			if(DEBUG_HOWARD_LEVEL2){
+				Slog.d(HOWARD_TAG, "Deliver the batch: start= " + batch.when + " nowELAPSED= " + nowELAPSED);
+				logBatchLockedHoward(batch);
+			}
+
+			// We will (re)schedule some alarms now; don't let that interfere
+			// with delivery of this current batch
+			mAlarmBatches.remove(0);
+
+			final int N = batch.size();
+			for (int i = 0; i < N; i++) {
+				Alarm alarm = batch.get(i);
+				alarm.count = 1;
+				triggerList.add(alarm);
+
+				// Recurring alarms may have passed several alarm intervals while the
+				// phone was asleep or off, so pass a trigger count when sending them.
+				if (alarm.repeatInterval > 0) {
+					// this adjustment will be zero if we're late by
+					// less than one full repeat interval
+					alarm.count += (nowELAPSED - alarm.whenElapsed) / alarm.repeatInterval;
+
+					// Also schedule its next recurrence
+					final long delta = alarm.count * alarm.repeatInterval;
+					final long nextElapsed = alarm.whenElapsed + delta;
+					setImplLocked(alarm.type, alarm.when + delta, nextElapsed, alarm.windowLength,
+							maxTriggerTime(nowELAPSED, nextElapsed, alarm.repeatInterval),
+							alarm.repeatInterval, alarm.operation, batch.standalone, true,
+							alarm.workSource);
+				}
+
+			}
+		}
+		/* Old policy: maximum connected component.
+		final Batch b = mNextWakeupBatch;
+		
+		if(b.canTrigger(nowELAPSED)){
+			mAlarmBatches.remove(b);
+			final int S = b.size();
+			if(DEBUG_HOWARD || DEBUG_HOWARD_LEVEL2){
+				Slog.d(HOWARD_TAG, "Deliver the batch:");
+				logBatchLockedHoward(b);
+			}
+			for (int i = 0; i < S; i++) {
+				Alarm alarm = b.get(i);
+				alarm.count = 1;
+				triggerList.add(alarm);
+	
+				// Recurring alarms may have passed several alarm intervals while the
+				// phone was asleep or off, so pass a trigger count when sending them.
+				if (alarm.repeatInterval > 0) {
+					// this adjustment will be zero if we're late by
+					// less than one full repeat interval
+					alarm.count += (nowELAPSED - alarm.whenElapsed) / alarm.repeatInterval;
+			
+					// Also schedule its next recurrence
+					final long delta = alarm.count * alarm.repeatInterval;
+					final long nextElapsed = alarm.whenElapsed + delta;
+					setImplLocked(alarm.type, alarm.when + delta, nextElapsed, alarm.windowLength,
+							maxTriggerTime(nowELAPSED, nextElapsed, alarm.repeatInterval),
+							alarm.repeatInterval, alarm.operation, b.standalone, true,
+							alarm.workSource);
+				}
+			}
+		}*/
+	}
+
+	private void logBatchLockedHoward(Batch b){
+		ByteArrayOutputStream bs = new ByteArrayOutputStream(2048);
+		PrintWriter pw = new PrintWriter(bs);
+		final long nowRTC = System.currentTimeMillis();
+		final long nowELAPSED = SystemClock.elapsedRealtime();
+		pw.append("Batch "); pw.print("0"); pw.append(": "); pw.println(b);
+		dumpAlarmList(pw, b.alarms, "  ", nowELAPSED, nowRTC);
+		pw.flush();
+		Slog.d(HOWARD_TAG, bs.toString());
+		bs.reset();
+	}
+
+	private void logBatchesLockedHoward(ArrayList<Batch> batches){
+		ByteArrayOutputStream bs = new ByteArrayOutputStream(2048);
+		PrintWriter pw = new PrintWriter(bs);
+		final long nowRTC = System.currentTimeMillis();
+		final long nowELAPSED = SystemClock.elapsedRealtime();
+		final int NZ = batches.size();
+		for (int iz = 0; iz < NZ; iz++) {
+			Batch bz = batches.get(iz);
+			pw.append("Batch "); pw.print(iz); pw.append(": "); pw.println(bz);
+			dumpAlarmList(pw, bz.alarms, "  ", nowELAPSED, nowRTC);
+			pw.flush();
+			Slog.d(HOWARD_TAG, bs.toString());
+			bs.reset();
+		}
+	}
+
+	/*
+	 *	Old policy: maximum connected component.
+     */ 
+	private ArrayList<Batch> getOverlappedAlarms(final Batch b){
+		ArrayList<Batch> ret = new ArrayList<Batch>();
+
+		final int N = mAlarmBatches.size();	
+		for (int i = 0; i < N; i++) {
+			Batch a = mAlarmBatches.get(i);
+			MultiResourceManager.SIMILARITY time = MultiResourceManager.getTimeSimilarity(a.start, a.end, a.intervalStart, a.intervalEnd, b.start, b.end, b.intervalStart, b.intervalEnd);
+			if(time.equals(MultiResourceManager.SIMILARITY.HIGH)){
+				ret.add(a);
+				continue;
+			}
+
+			if(!a.isPerceivable && !b.isPerceivable){
+				if(time.equals(MultiResourceManager.SIMILARITY.MID)){
+					ret.add(a);
+				}
+			}
+		}
+
+		return ret;
+	}
+
+	/*
+	 *	Old policy: maximum connected component.
+     */ 
+	private ArrayList<Batch> getProcessedAlarms(final Batch firstWakeup, final ArrayList<Batch> ori){
+		ArrayList<Batch> ret = ori;
+
+		boolean changeFlag = true;
+		int ite = 0;
+		
+		if (DEBUG_HOWARD) {
+			Slog.d(HOWARD_TAG, "");
+			Slog.d(HOWARD_TAG, "Original batches:");
+			logBatchesLockedHoward(mAlarmBatches);
+		}
+		while(changeFlag){
+			changeFlag = false;
+			ite++;
+			if(ite > LOOP_UPBOUND)	break;
+
+			if (DEBUG_HOWARD) {
+				Slog.d(HOWARD_TAG, "");
+				Slog.d(HOWARD_TAG, ite + " Processed Alarms:");
+				logBatchesLockedHoward(ret);
+			}
+				
+			for(int n = 0; n < ret.size(); n++){
+				Batch b = ret.get(n);
+				MultiResourceManager.SIMILARITY time = MultiResourceManager.getTimeSimilarity(firstWakeup.start, firstWakeup.end, firstWakeup.intervalStart, firstWakeup.intervalEnd, b.start, b.end, b.intervalStart, b.intervalEnd);
+				MultiResourceManager.SIMILARITY hardware = MultiResourceManager.getHardwareSimilarity(firstWakeup.hardwareUsage, b.hardwareUsage);
+			
+				if( (time == MultiResourceManager.SIMILARITY.HIGH && hardware == MultiResourceManager.SIMILARITY.HIGH) ||
+					(time == MultiResourceManager.SIMILARITY.HIGH && b.hardwareUsage == null) ){
+					continue;
+				}
+
+				final int N = mAlarmBatches.size();	
+				boolean higherFlag = false;
+				for (int i = 0; i < N; i++) {
+					Batch a = mAlarmBatches.get(i);		
+					if(b.equals(a))	continue;
+					if(ret.contains(a))	continue;
+					MultiResourceManager.SIMILARITY t = MultiResourceManager.getTimeSimilarity(a.start, a.end, a.intervalStart, a.intervalEnd, b.start, b.end, b.intervalStart, b.intervalEnd);
+					MultiResourceManager.SIMILARITY h = MultiResourceManager.getHardwareSimilarity(a.hardwareUsage, b.hardwareUsage);
+					
+					if (DEBUG_HOWARD) {
+						Slog.d(HOWARD_TAG, "Batch b: " + b + ". Batch a: " + a);
+						Slog.d(HOWARD_TAG, "Time Similarity: " + t + ". Hardware Similarity: " + h);
+					}
+	
+					if(isHigherSimilarity(time, hardware, t, h)){
+						Slog.d(HOWARD_TAG, "*Higher*Original Time: " + time + ". Original Hardware: " + hardware);
+						higherFlag = true;
+						changeFlag = true;
+						n--;
+						break;
+					}
+				}
+		
+				if(higherFlag)	ret.remove(b);
+			}
+
+		}
+		
+		return ret;
+	}
+
+	/**
+	 * Old policy: maximum connected component.
+	 * Find the maximum connected component and return the connected component.
+	 */
+	private Batch findMaximumConnectedBatch(){
+		final Batch firstWakeup = findFirstWakeupBatchLocked();
+		if(firstWakeup == null){
+			// Doesn't have wakeup alarms.
+			return null;
+		}
+
+		ArrayList<Batch> overlappedAlarmsOri = getOverlappedAlarms(firstWakeup);
+		if (DEBUG_HOWARD) {
+			Slog.d(HOWARD_TAG, "");
+			Slog.d(HOWARD_TAG, "Overlapped batches:");
+			logBatchesLockedHoward(overlappedAlarmsOri);
+		}	
+		//overlappedAlarmsOri = getProcessedAlarms(firstWakeup, overlappedAlarmsOri);
+		ArrayList<Batch> overlappedAlarms = cloneList(overlappedAlarmsOri);
+		ArrayList<Batch> connectedComponents = new ArrayList<Batch>();
+		ArrayList<ArrayList<Integer>> connectedBatchNumber = new ArrayList<ArrayList<Integer>>();
+
+		if (DEBUG_HOWARD) {
+			//Slog.d(HOWARD_TAG, "");
+			//Slog.d(HOWARD_TAG, "Original batches:");
+			//logBatchesLockedHoward(mAlarmBatches);
+			Slog.d(HOWARD_TAG, "");
+			Slog.d(HOWARD_TAG, "First wakeup batch:");
+			logBatchLockedHoward(firstWakeup);
+			Slog.d(HOWARD_TAG, "");
+			Slog.d(HOWARD_TAG, "Processed batches:");
+			logBatchesLockedHoward(overlappedAlarms);
+		}
+
+		// Connect the all mergeable nodes.
+		int size = overlappedAlarms.size();
+		for(int i = 0; i < size; i++){
+			Batch a = overlappedAlarms.get(i);
+
+			int mergeIndex = -1;
+			if(!a.standalone){
+				int connectedSize = connectedComponents.size();
+				for(int j = 0; j < connectedSize; j++){
+					Batch b = connectedComponents.get(j);
+
+					if(isMergeable(a, b)){
+						mergeIndex = j;
+						break;
+					}
+				}
+			}
+
+			if(mergeIndex != -1){
+				// Find a mergeable event.
+				connectedComponents.get(mergeIndex).add(a);
+				connectedBatchNumber.get(mergeIndex).add(i);
+			} else {
+				connectedComponents.add(a);
+				connectedBatchNumber.add(new ArrayList<Integer>());
+				connectedBatchNumber.get(connectedBatchNumber.size()-1).add(i);
+			}
+		}
+		
+		// Find the connected component with highest weight.
+		float highestWeight = -1;
+		int highestIndex = -1;
+		size = connectedComponents.size();
+		for(int i = 0; i < size; i++){
+			Batch b = connectedComponents.get(i);
+			if(!b.hasWakeups())	continue;
+			float weight = b.getWeight(); 
+			if(weight > highestWeight){
+				highestWeight = weight; 
+				highestIndex = i; 
+			}
+		}
+
+		// Rebatch the original batches.
+		ArrayList<Integer> highestBatchNumber = connectedBatchNumber.get(highestIndex);
+		Batch b = overlappedAlarmsOri.get(highestBatchNumber.get(0));
+		size = highestBatchNumber.size();
+		for(int i = 1; i < size; i++){
+			b.add(overlappedAlarmsOri.get(highestBatchNumber.get(i)));
+		}
+		for(int i = 1; i < size; i++){
+			mAlarmBatches.remove(overlappedAlarmsOri.get(highestBatchNumber.get(i)));
+		}
+
+		if (DEBUG_HOWARD) {
+			Slog.d(HOWARD_TAG, "");
+			Slog.d(HOWARD_TAG, "Connected batch number:");
+			for(int i = 0; i < connectedBatchNumber.size(); i++){
+				ArrayList<Integer> cCN = connectedBatchNumber.get(i);
+				StringBuffer sb = new StringBuffer();
+				if(i == highestIndex){
+					sb.append("*Highest Weight*");
+				}
+				sb.append("Connected component ");
+				sb.append(i);
+				sb.append(": ");
+				for(int j = 0; j < cCN.size(); j++){
+					sb.append(cCN.get(j));
+					sb.append(" ");
+				}
+				Slog.d(HOWARD_TAG, sb.toString());
+			}
+
+			Slog.d(HOWARD_TAG, "");
+			Slog.d(HOWARD_TAG, "Connected components:");
+			logBatchesLockedHoward(connectedComponents);
+			
+			//Slog.d(HOWARD_TAG, "");
+			//Slog.d(HOWARD_TAG, "Rebatch batches:");
+			//logBatchesLockedHoward(mAlarmBatches);
+		}
+
+		return b;
 	}
 }
