@@ -10,9 +10,13 @@ import android.net.NetworkInfo;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 import android.os.IMultiResourceManagerService;
+import android.util.Slog;
+
+import java.util.Arrays;
 
 public class MultiResourceManager {
-	private final String TAG = "MultiResourceManager";
+	private static final String TAG = "MultiResourceManager";
+	private static final boolean DEBUG = true;
 
 	public static enum SIMILARITY {
 		HIGH(3), MID(2), LOW(1);
@@ -26,14 +30,14 @@ public class MultiResourceManager {
 			return value;
 		}
 
-		boolean higher(SIMILARITY b){
+		public boolean higher(SIMILARITY b){
 			if(this.value > b.getValue()){
 				return true;
 			}
 			return false;
 		}
 
-		boolean equals(SIMILARITY b){
+		public boolean equals(SIMILARITY b){
 			if(this.value == b.getValue()){
 				return true;
 			}
@@ -109,10 +113,10 @@ public class MultiResourceManager {
 		int aHardware = 0, bHardware = 0;
 		for(int i = 0; i < NUM_HARDWARE; i++){
 			if(aHardwareUsage[i] > 0){
-				aHardware += 2^i;
+				aHardware += 1<<i;
 			}
 			if(bHardwareUsage[i] > 0){
-				bHardware += 2^i;
+				bHardware += 1<<i;
 			}
 		}
 
@@ -205,17 +209,5 @@ public class MultiResourceManager {
 		weight += getHardwareWeight(aHardwareUsage);
 
 		return weight;
-	}
-
-	public static boolean isHigherSimilarity(SIMILARITY time, SIMILARITY hardware, SIMILARITY t, SIMILARITY h, int[] firstWakeupHardware, int[] bHardware, int[] aHardware){
-
-		if(t.higher(SIMILARITY.LOW) && h.higher(hardware))	return true;
-		if(t.higher(time) && h.higher(hardware))	return true;
-		if(t.equals(time) && h.higher(hardware))	return true;
-		if(t.higher(time) && h.equals(hardware))	return true;	
-		//if(t.equals(time) || t.higher(time)){
-		//}
-	
-		return false;
 	}
 }
