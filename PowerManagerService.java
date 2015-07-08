@@ -80,7 +80,7 @@ public final class PowerManagerService extends IPowerManager.Stub
     private static final String TAG = "PowerManagerService";
 	private static final String HOWARD_TAG = "HOWARD_TAG";
 
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
     private static final boolean DEBUG_SPEW = DEBUG && true;
 
     // Message: Sent when a user activity timeout occurs to update the power state.
@@ -643,6 +643,19 @@ public final class PowerManagerService extends IPowerManager.Stub
                     return;
                 }
             }
+
+			if((flags & PowerManager.ACQUIRE_CAUSES_WAKEUP) == 0 && !isScreenOn() && uid >= 10000){
+				IMultiResourceManagerService mrm = IMultiResourceManagerService.Stub.asInterface(ServiceManager.getService(Context.RESOURCE_MANAGER_SERVICE));
+
+				try {
+					if(!mrm.isUserPerceivable(uid)){
+						return;
+					}
+				} catch(Exception e) {
+                    e.printStackTrace();
+                    return;
+                }
+			}
 
             WakeLock wakeLock;
             int index = findWakeLockIndexLocked(lock);

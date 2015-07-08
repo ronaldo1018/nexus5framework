@@ -508,15 +508,35 @@ public class AlarmManager
     }
 
 	/**
-     * Set the system default time zone.
-     * Requires the permission android.permission.SET_TIME_ZONE.
+     * Set the last grant hardware.
      *
-     * @param timeZone in the format understood by {@link java.util.TimeZone}
      */
     public void setLastGrantHardware(int uid, int hardware) {
         try {
             mService.setLastGrantHardware(uid, hardware);
         } catch (RemoteException ex) {
         }
+    }
+
+	public void onScreenOn() {
+        try {
+            mService.onScreenOn();
+        } catch (RemoteException ex) {
+        }
+    }
+
+	public void onScreenOff() {
+        try {
+            mService.onScreenOff();
+        } catch (RemoteException ex) {
+        }
+    }
+
+	public boolean isUserPerceivable(int uid){
+		try {
+            return mService.isUserPerceivable(uid);
+        } catch (RemoteException ex) {
+        }
+		return false;
     }
 }

@@ -37,6 +37,8 @@ MediaPlayerFolder=$AOSPPath"frameworks/base/media/java/android/media/"
 # Monitor screen state
 PowerManagerService=$AOSPPath"frameworks/base/services/java/com/android/server/power/PowerManagerService.java"
 PowerManagerServiceFolder=$AOSPPath"frameworks/base/services/java/com/android/server/power/"
+PowerManager=$AOSPPath"frameworks/base/core/java/android/os/PowerManager.java"
+PowerManagerFolder=$AOSPPath"frameworks/base/core/java/android/os/"
 WindowManagerService=$AOSPPath"frameworks/base/services/java/com/android/server/wm/WindowManagerService.java"
 WindowManagerServiceFolder=$AOSPPath"frameworks/base/services/java/com/android/server/wm/"
 
@@ -160,6 +162,14 @@ else
 	echo "Copy PowerManagerService.java..."
 	rm -f $PowerManagerService
 	cp PowerManagerService.java $PowerManagerServiceFolder
+fi
+
+if diff $PowerManager PowerManager.java >/dev/null ; then
+	echo "PowerManager.java is same"
+else
+	echo "Copy PowerManager.java..."
+	rm -f $PowerManager
+	cp PowerManager.java $PowerManagerFolder
 fi
 
 if diff $WindowManagerService WindowManagerService.java >/dev/null ; then

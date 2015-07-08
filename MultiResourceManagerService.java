@@ -154,7 +154,7 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 		mLastGrantTime.put(id, nowRtc);
 		mGrantHistory.get(hardware).add(new Pair(uid, nowRtc));	
 
-		//mAlarmManager.setLastGrantHardware(uid, hardware);
+		mAlarmManager.setLastGrantHardware(uid, hardware);
 
 		if(hardware == MultiResourceManager.HARDWARE_VIBRATION || hardware == MultiResourceManager.HARDWARE_SOUND) {
 			addNotificationEvent(uid, hardware);
@@ -519,6 +519,13 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 		return mNetworkType;
 	}
 
+	/**
+	 * Return whether the last event is perceivable or not.
+	 */
+	public boolean isUserPerceivable(int uid){
+		return mAlarmManager.isUserPerceivable(uid);
+	}
+
 	private class ScreenEvent {
 		int reason;
 		long startTime;
@@ -632,10 +639,12 @@ class MultiResourceManagerService extends IMultiResourceManagerService.Stub
 
 						mScreenOnReason = SCREEN_ON_DEFAULT;
 						mIsScreenOn = false;
+						mAlarmManager.onScreenOff();
 						return;
 					} else if (Intent.ACTION_SCREEN_ON.equals(action)) {
 						mScreenOnTime = System.currentTimeMillis();
 						mIsScreenOn = true;
+						mAlarmManager.onScreenOn();
 						return;
 					}
 				}
