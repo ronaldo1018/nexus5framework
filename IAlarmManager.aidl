@@ -34,6 +34,9 @@ interface IAlarmManager {
 
 	// HOWARD_POLICY
 	void setLastGrantHardware(int uid, int hardware);
+	void onScreenOn();
+	void onScreenOff();
+	boolean isUserPerceivable(int uid);
 }
 
 

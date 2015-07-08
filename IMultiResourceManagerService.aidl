@@ -18,4 +18,5 @@ interface IMultiResourceManagerService
 	float getAppUsage(int uid);
 
 	int getConnectivityType();
+	boolean isUserPerceivable(int uid);
 }
