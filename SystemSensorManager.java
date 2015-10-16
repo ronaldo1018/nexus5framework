@@ -117,7 +117,7 @@ public class SystemSensorManager extends SensorManager {
 			int callingUid = Binder.getCallingUid();
 			String sensorName = sensor.getName();			
 
-			Log.i(HOWARD_TAG, String.format("registerListenerImpl(). Binder: %d. Sensor: %s.", callingUid, sensorName));
+			Log.i(HOWARD_TAG, String.format("registerListenerImpl(). Binder: %d. Sensor: %s. delayUs: %d. maxBatchReportLatencyUs: %d. ", callingUid, sensorName, delayUs, maxBatchReportLatencyUs));
 			if(sensor.getName().contains("MPU6515 Accelerometer")){
 				IMultiResourceManagerService mrm = IMultiResourceManagerService.Stub.asInterface(ServiceManager.getService(Context.RESOURCE_MANAGER_SERVICE));
 

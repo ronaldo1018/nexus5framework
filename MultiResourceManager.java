@@ -121,23 +121,21 @@ public class MultiResourceManager {
 		}
 
 		if(aHardware != 0 && bHardware != 0){
-			if( aHardware == (aHardware | bHardware) || bHardware == (aHardware | bHardware) ){
-				// Subset.
+			if( aHardware == bHardware ){
+				// Completely identical.
 				return SIMILARITY.HIGH;
 			} else if ( (aHardware & bHardware) != 0){
 				// Share at least one hardware.
 				return SIMILARITY.MID;
 			}
 			return SIMILARITY.LOW;
-		} else if (aHardware == 0 && bHardware == 0){
-			// Both only use CPU.
-			return SIMILARITY.HIGH;
 		} else {
+			// At least one empty hardware.
 			return SIMILARITY.LOW;
 		}
 	}
 
-	public static float getHardwareWeight(int[] hardwareUsage){
+	/* public static float getHardwareWeight(int[] hardwareUsage){
 		float weight = 0.f;
 		int connectivityType = 0;
 		
@@ -209,5 +207,5 @@ public class MultiResourceManager {
 		weight += getHardwareWeight(aHardwareUsage);
 
 		return weight;
-	}
+	} */
 }
